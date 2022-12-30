@@ -11,6 +11,20 @@ struct SNRouteNIP05 {
     let nip05: String
 }
 
+struct SNRouteImageProxy {
+    let url: String
+    let width: Int?
+    let height: Int?
+    let ratio: String?
+    
+    init(url: String, width: Int? = nil, height: Int? = nil, ratio: String? = nil) {
+        self.url = url
+        self.width = width
+        self.height = height
+        self.ratio = ratio
+    }
+}
+
 struct SNRouteNIP05Response: Codable {
     let status: String
     let code: Int
@@ -36,10 +50,55 @@ struct SNRouteNIP05Response: Codable {
 
 enum SNRoutes {
     case nip05(SNRouteNIP05)
+    case imageProxy(SNRouteImageProxy)
 }
 
 enum SNPreparedFetchReturn {
     case nip05(SNRouteNIP05Response)
+    case notSupported
+}
+
+func SNPreparedURL(_ type: SNRoutes) -> URL? {
+    let safer_nostr_enabled: Bool = UserDefaults.standard.bool(forKey: "safer_nostr_enabled")
+    let safer_nostr_url: String = UserDefaults.standard.string(forKey: "safer_nostr_url")!
+    let safer_nostr_pass: String? = UserDefaults.standard.string(forKey: "safer_nostr_pass")
+    
+    if !safer_nostr_enabled {
+        return nil
+    }
+    
+    var urlComponents: URLComponents
+    
+    switch type {
+    case .nip05(let params):
+        let url = safer_nostr_url + "/nip05"
+        urlComponents = URLComponents(string: url)!
+        urlComponents.queryItems = [URLQueryItem]()
+        urlComponents.queryItems?.append(URLQueryItem(name: "nip05", value: params.nip05))
+    case .imageProxy(let params):
+        let url = safer_nostr_url + "/image_proxy"
+        urlComponents = URLComponents(string: url)!
+        urlComponents.queryItems = [URLQueryItem]()
+        urlComponents.queryItems?.append(URLQueryItem(name: "url", value: params.url))
+        
+        if params.width != nil {
+            urlComponents.queryItems?.append(URLQueryItem(name: "width", value: String(params.width!)))
+        }
+        
+        if params.height != nil {
+            urlComponents.queryItems?.append(URLQueryItem(name: "height", value: String(params.height!)))
+        }
+        
+        if params.ratio != nil {
+            urlComponents.queryItems?.append(URLQueryItem(name: "ratio", value: String(params.ratio!)))
+        }
+    }
+
+    if let instance_password = safer_nostr_pass {
+        urlComponents.queryItems?.append(URLQueryItem(name: "pass", value: instance_password))
+    }
+
+    return urlComponents.url
 }
 
 func SNPreparedFetch(type: SNRoutes) -> SNPreparedFetchReturn? {
@@ -65,6 +124,8 @@ func SNPreparedFetch(type: SNRoutes) -> SNPreparedFetchReturn? {
         }
         
         return .nip05(response)
+    case .imageProxy:
+        return .notSupported
     }
 }
 

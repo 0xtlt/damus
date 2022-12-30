@@ -39,6 +39,8 @@ struct InnerProfilePicView: View {
     let pubkey: String
     let size: CGFloat
     let highlight: Highlight
+    
+    @AppStorage("safer_nostr_enabled") var safer_nostr_enabled: Bool = false
 
     var PlaceholderColor: Color {
         return id_to_color(pubkey)
@@ -55,7 +57,7 @@ struct InnerProfilePicView: View {
     var body: some View {
         Group {
             if reasons.isEmpty {
-                KFAnimatedImage(url)
+                KFAnimatedImage(url != nil ? SNPreparedURL(.imageProxy(SNRouteImageProxy(url: url!.description, width: 75, ratio: "1:1"))) ?? url : nil)
                     .configure { view in
                         view.framePreloadCount = 1
                     }
