@@ -18,6 +18,16 @@ struct ConfigView: View {
     @State var privkey_copied: Bool = false
     @State var pubkey_copied: Bool = false
     
+    @AppStorage("safer_nostr_enabled") var safer_nostr_enabled: Bool = false
+    @AppStorage("safer_nostr_url") var safer_nostr_url: String = ""
+    @AppStorage("safer_nostr_pass") var safer_nostr_pass: String = ""
+    
+    @State var tmp_safer_nostr_enabled: Bool = false
+    @State var tmp_safer_nostr_url: String = "http://localhost:8080"
+    @State var tmp_safer_nostr_pass: String = ""
+    @State var tmp_safer_nostr_checking: Bool = false
+    @State var tmp_safer_nostr_error: Bool = false
+    
     let generator = UIImpactFeedbackGenerator(style: .light)
     
     init(state: DamusState) {
@@ -78,6 +88,43 @@ struct ConfigView: View {
                     }
                 }
                 
+                Section("Safer Nostr Delegation") {
+                    TextField("Instance URL (https://delegation.damus.io)", text: $tmp_safer_nostr_url)
+                        .disabled(tmp_safer_nostr_checking)
+                    SecureField("Instance pass if pass is enabled", text: $tmp_safer_nostr_pass)
+                        .disabled(tmp_safer_nostr_checking)
+                    
+                    
+                    Toggle("Enable", isOn: $tmp_safer_nostr_enabled)
+                        .disabled(tmp_safer_nostr_checking)
+                        .onChange(of: tmp_safer_nostr_enabled) { newValue in
+                            if !newValue {
+                                safer_nostr_enabled = false
+                            } else {
+                                tmp_safer_nostr_checking = true
+                                
+                                // Check
+                                let r = SNFetch(instance_url: tmp_safer_nostr_url + "/is_good", instance_password: tmp_safer_nostr_pass, variables: [:])
+                                
+                                let r2 = SNCheckStatus.parse(r ?? "")
+                                
+                                // 0 Is error | 1 Is success
+                                if r2?.code == 1 {
+                                    safer_nostr_url = tmp_safer_nostr_url
+                                    safer_nostr_pass = tmp_safer_nostr_pass
+                                    tmp_safer_nostr_checking = false
+                                    safer_nostr_enabled = true
+                                } else {
+                                    tmp_safer_nostr_error = true
+                                }
+                            }
+                        }
+                }.onAppear {
+                    tmp_safer_nostr_url = safer_nostr_url
+                    tmp_safer_nostr_pass = safer_nostr_pass
+                    tmp_safer_nostr_enabled = safer_nostr_enabled
+                }
+                
                 Section("Reset") {
                     Button("Logout") {
                         confirm_logout = true
@@ -101,6 +148,15 @@ struct ConfigView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
+        .alert("Error: Safer Nostr Instance", isPresented: $tmp_safer_nostr_error) {
+            Button("OK") {
+                tmp_safer_nostr_enabled = false
+                tmp_safer_nostr_checking = false
+                tmp_safer_nostr_error = false
+            }
+        } message: {
+            Text("Make sure that the URL and password provided for your instance are correct, or that your instance is running")
+        }
         .alert("Logout", isPresented: $confirm_logout) {
             Button("Cancel") {
                 confirm_logout = false
