@@ -86,7 +86,7 @@ struct ImageViewer: View {
                 VStack{
                     Text(url.lastPathComponent)
                     
-                    KFAnimatedImage(url)
+                    KFAnimatedImage(SNPreparedURL(.imageProxy(SNRouteImageProxy(url: url.description, width: 500, height: 500))) ?? url)
                         .configure { view in
                             view.framePreloadCount = 3
                         }
@@ -124,7 +124,7 @@ struct ImageCarousel: View {
                 Rectangle()
                     .foregroundColor(Color.clear)
                     .overlay {
-                        KFAnimatedImage(url)
+                        KFAnimatedImage(SNPreparedURL(.imageProxy(SNRouteImageProxy(url: url.description, width: 500, height: 500))) ?? url)
                             .configure { view in
                                 view.framePreloadCount = 3
                             }
