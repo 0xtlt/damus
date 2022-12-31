@@ -28,6 +28,8 @@ struct ConfigView: View {
     @State var tmp_safer_nostr_checking: Bool = false
     @State var tmp_safer_nostr_error: Bool = false
     
+    @State var relays: [RelayDescriptor]
+    
     let generator = UIImpactFeedbackGenerator(style: .light)
     
     init(state: DamusState) {

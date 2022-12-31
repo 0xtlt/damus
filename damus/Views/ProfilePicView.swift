@@ -57,7 +57,7 @@ struct InnerProfilePicView: View {
     var body: some View {
         Group {
             if reasons.isEmpty {
-                KFAnimatedImage(url != nil ? SNPreparedURL(.imageProxy(SNRouteImageProxy(url: url!.description, width: 75, ratio: "1:1"))) ?? url : nil)
+                KFAnimatedImage(url != nil ? SNPreparedURL(.imageProxy(SNRouteImageProxy(url: url!.description, width: Int(size), ratio: "1:1"))) ?? url : nil)
                     .configure { view in
                         view.framePreloadCount = 1
                     }
