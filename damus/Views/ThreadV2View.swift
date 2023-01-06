@@ -5,6 +5,11 @@
 //  Created by Thomas Tastet on 25/12/2022.
 //
 
+//Change:
+//We will use nip10 (root id) to load all events instead of loading events one by one.
+//
+//To avoid problems with event view appearing and disappearing in all directions, we will store each event in a global event object whenever we receive an event and then look inside it and try to make a connection between parent and child messages
+
 import SwiftUI
 
 struct ThreadV2 {
@@ -39,16 +44,16 @@ struct ThreadV2 {
 struct BuildThreadV2View: View {
     let damus: DamusState
     
-    @State var parents_ids: [String] = []
+    @State var events: [NostrEvent] = []
+    
+    @State var thread: ThreadV2? = nil
+    
     let event_id: String
     
     @State var current_event: NostrEvent? = nil
     
-    @State var thread: ThreadV2? = nil
-    
     @State var current_events_uuid: String = ""
-    @State var childs_events_uuid: String = ""
-    @State var parents_events_uuids: [String] = []
+    @State var nip10_events_uuid: String = ""
     
     @State var subscriptions_uuids: [String] = []
     
@@ -98,34 +103,28 @@ struct BuildThreadV2View: View {
         )
         
         // Get parents
-        parents_ids = current_event!.tags.enumerated().filter { (index, tag) in
-            return tag.count >= 2 && tag[0] == "e" && !current_event!.content.contains("#[\(index)]")
+        let root_event_id = current_event!.tags.enumerated().filter { (index, tag) in
+            return tag.count >= 2 && tag[0] == "e"
         }.map { tag in
             return tag.1[1]
+        }.first
+        
+        var NIP10 = current_event!.id
+        
+        if root_event_id != nil && !root_event_id!.isEmpty {
+            NIP10 = root_event_id!
         }
         
-        print("ThreadV2View: Parents list: (\(parents_ids)")
+        print("ThreadV2View - NIP10: (\(NIP10)")
         
-        if parents_ids.count > 0 {
-            // Ask for parents
-            let parents_events = NostrFilter(
-                ids: parents_ids,
-                limit: UInt32(parents_ids.count)
-            )
-            
-            let uuid = subscribe(filters: [parents_events])
-            parents_events_uuids.append(uuid)
-            print("ThreadV2View: Ask for parents (\(uuid)) (\(parents_events))")
-        }
-        
-        // Ask for children
-        let childs_events = NostrFilter(
+        // Ask for events
+        let nip10_events = NostrFilter(
             kinds: [1],
-            referenced_ids: [self.event_id],
-            limit: 50
+            referenced_ids: [NIP10],
+            limit: 100
         )
-        childs_events_uuid = subscribe(filters: [childs_events])
-        print("ThreadV2View: Ask for children (\(childs_events) (\(childs_events_uuid))")
+        nip10_events_uuid = subscribe(filters: [nip10_events])
+        print("ThreadV2View: Ask for events (\(nip10_events) (\(nip10_events_uuid))")
     }
     
     func handle_parent_events(sub_id: String, nostr_event: NostrEvent) {
@@ -164,6 +163,15 @@ struct BuildThreadV2View: View {
     
     }
     
+    func handle_nip10_events(sub_id: String, nostr_event: NostrEvent) {
+        if events.contains(nostr_event) {
+           return
+        }
+        
+        events.append(nostr_event)
+        
+    }
+    
     func handle_event(relay_id: String, ev: NostrConnectionEvent) {
         guard case .nostr_event(let nostr_response) = ev else {
             return
@@ -179,18 +187,18 @@ struct BuildThreadV2View: View {
             return
         }
         
-        if parents_events_uuids.contains(id) {
-            handle_parent_events(sub_id: id, nostr_event: nostr_event)
+        if id == nip10_events_uuid {
+            handle_nip10_events(sub_id: id, nostr_event: nostr_event)
             return
         }
         
-        if id == childs_events_uuid {
-            // We are filtering this later
-            thread!.childEvents.append(nostr_event)
-            
-            thread!.clean()
-            return
-        }
+//        if id == childs_events_uuid {
+//            // We are filtering this later
+//            thread!.childEvents.append(nostr_event)
+//
+//            thread!.clean()
+//            return
+//        }
     }
 
     func reload() {
