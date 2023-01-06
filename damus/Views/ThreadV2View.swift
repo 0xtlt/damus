@@ -127,42 +127,6 @@ struct BuildThreadV2View: View {
         print("ThreadV2View: Ask for events (\(nip10_events) (\(nip10_events_uuid))")
     }
     
-    func handle_parent_events(sub_id: String, nostr_event: NostrEvent) {
-    
-        // We are filtering this later
-        thread!.parentEvents.append(nostr_event)
-        
-        // Get parents of parents
-        let local_parents_ids = nostr_event.tags.enumerated().filter { (index, tag) in
-            return tag.count >= 2 && tag[0] == "e" && !nostr_event.content.contains("#[\(index)]")
-        }.map { tag in
-            return tag.1[1]
-        }.filter { tag_id in
-            return !parents_ids.contains(tag_id)
-        }
-        
-        print("ThreadV2View: Sub Parents list: (\(local_parents_ids))")
-        
-        // Expand new parents id
-        parents_ids.append(contentsOf: local_parents_ids)
-        
-        if local_parents_ids.count > 0 {
-            // Ask for parents
-            let parents_events = NostrFilter(
-                ids: local_parents_ids,
-                limit: UInt32(local_parents_ids.count)
-            )
-            let uuid = subscribe(filters: [parents_events])
-            parents_events_uuids.append(uuid)
-            print("ThreadV2View: Ask for sub_parents (\(local_parents_ids)) \(uuid)")
-        }
-        
-        thread!.clean()
-        unsubscribe(sub_id)
-        return
-    
-    }
-    
     func handle_nip10_events(sub_id: String, nostr_event: NostrEvent) {
         if events.contains(nostr_event) {
            return
