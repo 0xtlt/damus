@@ -33,13 +33,12 @@ func pfp_line_width(_ h: Highlight) -> CGFloat {
 }
 
 struct InnerProfilePicView: View {
+    
     let url: URL?
     let fallbackUrl: URL?
     let pubkey: String
     let size: CGFloat
     let highlight: Highlight
-    
-    @State private var refreshID = UUID().uuidString
 
     var PlaceholderColor: Color {
         return id_to_color(pubkey)
@@ -58,55 +57,20 @@ struct InnerProfilePicView: View {
             Color(uiColor: .systemBackground)
     
             KFAnimatedImage(url)
-                .callbackQueue(.dispatch(.global(qos: .background)))
-                .processingQueue(.dispatch(.global(qos: .background)))
-                .appendProcessor(LargeImageProcessor.shared)
+                .imageContext(.pfp)
+                .onFailure(fallbackUrl: fallbackUrl, cacheKey: url?.absoluteString)
+                .cancelOnDisappear(true)
                 .configure { view in
-                    view.framePreloadCount = 1
+                    view.framePreloadCount = 3
                 }
                 .placeholder { _ in
                     Placeholder
                 }
-                .scaleFactor(UIScreen.main.scale)
-                .loadDiskFileSynchronously()
-                .fade(duration: 0.1)
-                .onFailure { _ in
-                    setFallbackImage()
-                }
+                .scaledToFill()
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
         .overlay(Circle().stroke(highlight_color(highlight), lineWidth: pfp_line_width(highlight)))
-        .id(refreshID)
-    }
-    
-    func refreshView() -> Void {
-        refreshID = UUID().uuidString
-    }
-    
-    func setFallbackImage() -> Void {
-        
-        guard let url = url, let fallbackUrl = fallbackUrl else { return }
-
-        KingfisherManager.shared.downloader.downloadImage(with: fallbackUrl) { result in
-            
-            func fallbackImage() -> UIImage {
-                switch result {
-                case .success(let imageLoadingResult):
-                    return imageLoadingResult.image
-                case .failure(let error):
-                    print(error)
-                    return UIImage()
-                }
-            }
-            
-            // Kingfisher ID format for caching when using a custom processor
-            let processorIdentifier = "|>" + LargeImageProcessor.shared.identifier
-            
-            KingfisherManager.shared.cache.store(fallbackImage(), forKey: url.absoluteString, processorIdentifier: processorIdentifier) { _ in
-                refreshView()
-            }
-        }
     }
 }
 
@@ -142,35 +106,6 @@ struct ProfilePicView: View {
     }
 }
 
-struct LargeImageProcessor: ImageProcessor {
-    
-    static let shared = LargeImageProcessor()
-    
-    let identifier = "com.damus.largeimageprocessor"
-    let maxSize: Int = 1000000
-    let downsampleSize = CGSize(width: 200, height: 200)
-    
-    func process(item: ImageProcessItem, options: KingfisherParsedOptionsInfo) -> KFCrossPlatformImage? {
-        
-        switch item {
-        case .image(let image):
-            guard let data = image.kf.data(format: .unknown) else {
-                return nil
-            }
-            
-            if data.count > maxSize {
-                return KingfisherWrapper.downsampledImage(data: data, to: downsampleSize, scale: options.scaleFactor)
-            }
-            return image
-        case .data(let data):
-            if data.count > maxSize {
-                return KingfisherWrapper.downsampledImage(data: data, to: downsampleSize, scale: options.scaleFactor)
-            }
-            return KFCrossPlatformImage(data: data)
-        }
-    }
-}
-
 func get_profile_url(picture: String?, pubkey: String, profiles: Profiles) -> URL {
     let pic = picture ?? profiles.lookup(id: pubkey)?.picture ?? robohash(pubkey)
     if let url = URL(string: pic) {
@@ -182,7 +117,7 @@ func get_profile_url(picture: String?, pubkey: String, profiles: Profiles) -> UR
 func make_preview_profiles(_ pubkey: String) -> Profiles {
     let profiles = Profiles()
     let picture = "http://cdn.jb55.com/img/red-me.jpg"
-    let profile = Profile(name: "jb55", display_name: "William Casarin", about: "It's me", picture: picture, website: "https://jb55.com", lud06: nil, lud16: nil, nip05: "jb55.com")
+    let profile = Profile(name: "jb55", display_name: "William Casarin", about: "It's me", picture: picture, banner: "", website: "https://jb55.com", lud06: nil, lud16: nil, nip05: "jb55.com")
     let ts_profile = TimestampedProfile(profile: profile, timestamp: 0)
     profiles.add(id: pubkey, profile: ts_profile)
     return profiles

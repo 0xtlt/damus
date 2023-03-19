@@ -13,9 +13,8 @@ struct SearchView: View {
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
-        TimelineView(events: $search.events, loading: $search.loading, damus: appstate, show_friend_icon: true, filter: { _ in true })
+        TimelineView(events: search.events, loading: $search.loading, damus: appstate, show_friend_icon: true, filter: { _ in true })
             .navigationBarTitle(describe_search(search.search))
-            .padding([.leading, .trailing], 6)
             .onReceive(handle_notify(.switched_timeline)) { obj in
                 dismiss()
             }
@@ -24,6 +23,9 @@ struct SearchView: View {
             }
             .onDisappear() {
                 search.unsubscribe()
+            }
+            .onReceive(handle_notify(.new_mutes)) { notif in
+                search.filter_muted()
             }
     }
 }
@@ -42,7 +44,8 @@ struct SearchView_Previews: PreviewProvider {
         let test_state = test_damus_state()
         let filter = NostrFilter.filter_hashtag(["bitcoin"])
         let pool = test_state.pool
-        let model = SearchModel(pool: pool, search: filter)
+        
+        let model = SearchModel(contacts: test_state.contacts, pool: pool, search: filter)
         
         SearchView(appstate: test_state, search: model)
     }

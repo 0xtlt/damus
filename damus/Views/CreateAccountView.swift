@@ -11,6 +11,7 @@ struct CreateAccountView: View {
     @StateObject var account: CreateAccountModel = CreateAccountModel()
     @State var is_light: Bool = false
     @State var is_done: Bool = false
+    @State var reading_eula: Bool = false
     
     func SignupForm<FormContent: View>(@ViewBuilder content: () -> FormContent) -> some View {
         return VStack(alignment: .leading, spacing: 10.0, content: content)
@@ -35,14 +36,14 @@ struct CreateAccountView: View {
                 
                 HStack(alignment: .top) {
                     VStack {
-                        Text("   ", comment: "Blank space to separate profile picture from profile editor form.")
+                        Text(verbatim: "   ")
                             .foregroundColor(.white)
                     }
                     VStack {
                         SignupForm {
                             FormLabel(NSLocalizedString("Username", comment: "Label to prompt username entry."))
                             HStack(spacing: 0.0) {
-                                Text("@", comment: "Prefix character to username.")
+                                Text(verbatim: "@")
                                     .foregroundColor(.white)
                                     .padding(.leading, -25.0)
                                 
@@ -75,6 +76,7 @@ struct CreateAccountView: View {
                 NavigationLink(destination: SaveKeysView(account: account), isActive: $is_done) {
                     EmptyView()
                 }
+                
                 DamusWhiteButton(NSLocalizedString("Create", comment: "Button to create account.")) {
                     self.is_done = true
                 }

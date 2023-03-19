@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct NostrFilter: Codable {
+struct NostrFilter: Codable, Equatable {
     var ids: [String]?
     var kinds: [Int]?
     var referenced_ids: [String]?
@@ -17,6 +17,7 @@ struct NostrFilter: Codable {
     var limit: UInt32?
     var authors: [String]?
     var hashtag: [String]? = nil
+    var parameter: [String]? = nil
 
     private enum CodingKeys : String, CodingKey {
         case ids
@@ -24,6 +25,7 @@ struct NostrFilter: Codable {
         case referenced_ids = "#e"
         case pubkeys = "#p"
         case hashtag = "#t"
+        case parameter = "#d"
         case since
         case until
         case authors
@@ -35,13 +37,17 @@ struct NostrFilter: Codable {
     }
     
     public static func filter_hashtag(_ htags: [String]) -> NostrFilter {
-        return NostrFilter(ids: nil, kinds: nil, referenced_ids: nil, pubkeys: nil, since: nil, until: nil, authors: nil, hashtag: htags)
+        return NostrFilter(ids: nil, kinds: nil, referenced_ids: nil, pubkeys: nil, since: nil, until: nil, authors: nil, hashtag: htags.map { $0.lowercased() })
     }
 
     public static var filter_text: NostrFilter {
         return filter_kinds([1])
     }
-
+    
+    public static func filter_ids(_ ids: [String]) -> NostrFilter {
+        return NostrFilter(ids: ids, kinds: nil, referenced_ids: nil, pubkeys: nil, since: nil, until: nil, authors: nil, hashtag: nil)
+    }
+    
     public static var filter_profiles: NostrFilter {
         return filter_kinds([0])
     }

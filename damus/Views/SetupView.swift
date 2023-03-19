@@ -42,10 +42,10 @@ struct SetupView: View {
                 DamusGradient()
                 
                 VStack(alignment: .center) {
-                    NavigationLink(destination: CreateAccountView(), tag: .create_account, selection: $state ) {
+                    NavigationLink(destination: EULAView(state: state), tag: .create_account, selection: $state ) {
                         EmptyView()
                     }
-                    NavigationLink(destination: LoginView(), tag: .login, selection: $state ) {
+                    NavigationLink(destination: EULAView(state: state), tag: .login, selection: $state ) {
                         EmptyView()
                     }
                     
@@ -64,7 +64,7 @@ struct SetupView: View {
                         self.state = .create_account
                     }
                     
-                    Button("Login") {
+                    Button(NSLocalizedString("Login", comment: "Button to log into an account.")) {
                         self.state = .login
                     }
                     .padding([.top, .bottom], 20)

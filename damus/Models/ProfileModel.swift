@@ -8,17 +8,37 @@
 import Foundation
 
 class ProfileModel: ObservableObject, Equatable {
-    @Published var events: [NostrEvent] = []
+    var events: EventHolder = EventHolder()
     @Published var contacts: NostrEvent? = nil
     @Published var following: Int = 0
     @Published var relays: [String: RelayInfo]? = nil
+    @Published var progress: Int = 0
     
     let pubkey: String
     let damus: DamusState
     
+    
     var seen_event: Set<String> = Set()
     var sub_id = UUID().description
     var prof_subid = UUID().description
+    
+    func follows(pubkey: String) -> Bool {
+        guard let contacts = self.contacts else {
+            return false
+        }
+        
+        for tag in contacts.tags {
+            guard tag.count >= 2 && tag[0] == "p" else {
+                continue
+            }
+            
+            if tag[1] == pubkey {
+                return true
+            }
+        }
+        
+        return false
+    }
     
     func get_follow_target() -> FollowTarget {
         if let contacts = contacts {
@@ -70,7 +90,7 @@ class ProfileModel: ObservableObject, Equatable {
     }
     
     func handle_profile_contact_event(_ ev: NostrEvent) {
-        process_contact_event(pool: damus.pool, contacts: damus.contacts, pubkey: damus.pubkey, ev: ev)
+        process_contact_event(state: damus, ev: ev)
         
         // only use new stuff
         if let current_ev = self.contacts {
@@ -93,11 +113,13 @@ class ProfileModel: ObservableObject, Equatable {
             return
         }
         if ev.is_textlike || ev.known_kind == .boost {
-            let _ = insert_uniq_sorted_event(events: &self.events, new_ev: ev, cmp: { $0.created_at > $1.created_at})
+            if self.events.insert(ev) {
+                self.objectWillChange.send()
+            }
         } else if ev.known_kind == .contacts {
             handle_profile_contact_event(ev)
         } else if ev.known_kind == .metadata {
-            process_metadata_event(profiles: damus.profiles, ev: ev)
+            process_metadata_event(our_pubkey: damus.pubkey, profiles: damus.profiles, ev: ev)
         }
         seen_event.insert(ev.id)
     }
@@ -107,15 +129,16 @@ class ProfileModel: ObservableObject, Equatable {
         case .ws_event:
             return
         case .nostr_event(let resp):
+            guard resp.subid == self.sub_id || resp.subid == self.prof_subid else {
+                return
+            }
             switch resp {
-            case .event(let sid, let ev):
-                if sid != self.sub_id && sid != self.prof_subid {
-                    return
-                }
+            case .event(_, let ev):
                 add_event(ev)
             case .notice(let notice):
                 notify(.notice, notice)
             case .eose:
+                progress += 1
                 break
             }
         }

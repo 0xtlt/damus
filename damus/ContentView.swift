@@ -7,16 +7,12 @@
 
 import SwiftUI
 import Starscream
-import Kingfisher
 
 var BOOTSTRAP_RELAYS = [
     "wss://relay.damus.io",
-    "wss://nostr-relay.wlvs.space",
-    "wss://nostr.fmt.wiz.biz",
-    "wss://relay.nostr.bg",
-    "wss://nostr.oxtr.dev",
-    "wss://nostr.v0l.io",
-    "wss://brb.io",
+    "wss://eden.nostr.land",
+    "wss://nostr.wine",
+    "wss://nos.lol",
 ]
 
 struct TimestampedProfile {
@@ -26,12 +22,18 @@ struct TimestampedProfile {
 
 enum Sheets: Identifiable {
     case post
+    case report(ReportTarget)
     case reply(NostrEvent)
+    case event(NostrEvent)
+    case filter
 
     var id: String {
         switch self {
+        case .report: return "report"
         case .post: return "post"
         case .reply(let ev): return "reply-" + ev.id
+        case .event(let ev): return "event-" + ev.id
+        case .filter: return "filter"
         }
     }
 }
@@ -71,19 +73,24 @@ struct ContentView: View {
     @State var damus_state: DamusState? = nil
     @State var selected_timeline: Timeline? = .home
     @State var is_thread_open: Bool = false
+    @State var is_deleted_account: Bool = false
     @State var is_profile_open: Bool = false
     @State var event: NostrEvent? = nil
     @State var active_profile: String? = nil
     @State var active_search: NostrFilter? = nil
-    @State var active_event_id: String? = nil
+    @State var active_event: NostrEvent? = nil
     @State var profile_open: Bool = false
     @State var thread_open: Bool = false
     @State var search_open: Bool = false
+    @State var blocking: String? = nil
+    @State var confirm_block: Bool = false
+    @State var user_blocked_confirm: Bool = false
+    @State var confirm_overwrite_mutelist: Bool = false
+    @State var current_boost: NostrEvent? = nil
     @State var filter_state : FilterState = .posts_and_replies
     @State private var isSideBarOpened = false
     @StateObject var home: HomeModel = HomeModel()
-    @StateObject var user_settings = UserSettingsStore()
-
+    
     // connect retry timer
     let timer = Timer.publish(every: 4, on: .main, in: .common).autoconnect()
 
@@ -93,49 +100,68 @@ struct ContentView: View {
 
     var PostingTimelineView: some View {
         VStack {
-            TabView(selection: $filter_state) {
-                contentTimelineView(filter: FilterState.posts.filter)
-                    .tag(FilterState.posts)
-                    .id(FilterState.posts)
-                contentTimelineView(filter: FilterState.posts_and_replies.filter)
-                    .tag(FilterState.posts_and_replies)
-                    .id(FilterState.posts_and_replies)
+            ZStack {
+                TabView(selection: $filter_state) {
+                    contentTimelineView(filter: FilterState.posts.filter)
+                        .tag(FilterState.posts)
+                        .id(FilterState.posts)
+                    contentTimelineView(filter: FilterState.posts_and_replies.filter)
+                        .tag(FilterState.posts_and_replies)
+                        .id(FilterState.posts_and_replies)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                
+                if privkey != nil {
+                    PostButtonContainer(is_left_handed: damus_state?.settings.left_handed ?? false) {
+                        self.active_sheet = .post
+                    }
+                }
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
         }
-        .safeAreaInset(edge: .top) {
+        .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
-                FiltersView
-                    //.frame(maxWidth: 275)
-                    .padding()
+                CustomPicker(selection: $filter_state, content: {
+                    Text("Posts", comment: "Label for filter for seeing only posts (instead of posts and replies).").tag(FilterState.posts)
+                    Text("Posts & Replies", comment: "Label for filter for seeing posts and replies (instead of only posts).").tag(FilterState.posts_and_replies)
+                })
                 Divider()
                     .frame(height: 1)
             }
             .background(colorScheme == .dark ? Color.black : Color.white)
         }
-        .ignoresSafeArea(.keyboard)
     }
     
     func contentTimelineView(filter: (@escaping (NostrEvent) -> Bool)) -> some View {
         ZStack {
             if let damus = self.damus_state {
-                TimelineView(events: $home.events, loading: $home.loading, damus: damus, show_friend_icon: false, filter: filter)
-            }
-            if privkey != nil {
-                PostButtonContainer(userSettings: user_settings) {
-                    self.active_sheet = .post
-                }
+                TimelineView(events: home.events, loading: $home.loading, damus: damus, show_friend_icon: false, filter: filter)
             }
         }
     }
     
-    var FiltersView: some View {
-        VStack{
-            Picker(NSLocalizedString("Filter State", comment: "Filter state for seeing either only posts, or posts & replies."), selection: $filter_state) {
-                Text("Posts", comment: "Label for filter for seeing only posts (instead of posts and replies).").tag(FilterState.posts)
-                Text("Posts & Replies", comment: "Label for filter for seeing posts and replies (instead of only posts).").tag(FilterState.posts_and_replies)
-            }
-            .pickerStyle(.segmented)
+    func popToRoot() {
+        profile_open = false
+        thread_open = false
+        search_open = false
+        isSideBarOpened = false
+    }
+    
+    var timelineNavItem: Text {
+        switch selected_timeline {
+        case .home:
+            return Text("Home", comment: "Navigation bar title for Home view where posts and replies appear from those who the user is following.")
+                .bold()
+        case .dms:
+            return Text("DMs", comment: "Toolbar label for DMs view, where DM is the English abbreviation for Direct Message.")
+                .bold()
+        case .notifications:
+            return Text("Notifications", comment: "Toolbar label for Notifications view.")
+                .bold()
+        case .search:
+            return Text("Universe 🛸", comment: "Toolbar label for the universal view where posts from all connected relay servers appear.")
+                .bold()
+        case .none:
+            return Text(verbatim: "")
         }
     }
     
@@ -144,22 +170,30 @@ struct ContentView: View {
             NavigationLink(destination: MaybeProfileView, isActive: $profile_open) {
                 EmptyView()
             }
-            NavigationLink(destination: MaybeThreadView, isActive: $thread_open) {
-                EmptyView()
+            if let active_event {
+                let thread = ThreadModel(event: active_event, damus_state: damus_state!)
+                NavigationLink(destination: ThreadView(state: damus_state!, thread: thread), isActive: $thread_open) {
+                    EmptyView()
+                }
             }
             NavigationLink(destination: MaybeSearchView, isActive: $search_open) {
                 EmptyView()
             }
             switch selected_timeline {
             case .search:
-                SearchHomeView(damus_state: damus_state!, model: SearchHomeModel(damus_state: damus_state!))
+                if #available(iOS 16.0, *) {
+                    SearchHomeView(damus_state: damus_state!, model: SearchHomeModel(damus_state: damus_state!))
+                        .scrollDismissesKeyboard(.immediately)
+                } else {
+                    // Fallback on earlier versions
+                    SearchHomeView(damus_state: damus_state!, model: SearchHomeModel(damus_state: damus_state!))
+                }
                 
             case .home:
                 PostingTimelineView
                 
             case .notifications:
-                TimelineView(events: $home.notifications, loading: $home.loading, damus: damus, show_friend_icon: true, filter: { _ in true })
-                    .navigationTitle(NSLocalizedString("Notifications", comment: "Navigation title for notifications."))
+                NotificationsView(state: damus, notifications: home.notifications)
                 
             case .dms:
                 DirectMessagesView(damus_state: damus_state!)
@@ -169,36 +203,31 @@ struct ContentView: View {
                 EmptyView()
             }
         }
-        .navigationBarTitle(selected_timeline == .home ?  NSLocalizedString("Home", comment: "Navigation bar title for Home view where posts and replies appear from those who the user is following.") : NSLocalizedString("Global", comment: "Navigation bar title for Global view where posts from all connected relay servers appear."), displayMode: .inline)
+        .navigationBarTitle(timeline_name(selected_timeline), displayMode: .inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                if selected_timeline == .home {
-                    Image("damus-home")
-                    .resizable()
-                    .frame(width:30,height:30)
-                    .shadow(color: Color("DamusPurple"), radius: 2)
-                } else {
-                    Text("Global")
+                VStack {
+                    if selected_timeline == .home {
+                        Image("damus-home")
+                            .resizable()
+                            .frame(width:30,height:30)
+                            .shadow(color: Color("DamusPurple"), radius: 2)
+                            .opacity(isSideBarOpened ? 0 : 1)
+                            .animation(isSideBarOpened ? .none : .default, value: isSideBarOpened)
+                    } else {
+                        timelineNavItem
+                            .opacity(isSideBarOpened ? 0 : 1)
+                            .animation(isSideBarOpened ? .none : .default, value: isSideBarOpened)
+                    }
                 }
             }
-             
         }
     }
     
     var MaybeSearchView: some View {
         Group {
             if let search = self.active_search {
-                SearchView(appstate: damus_state!, search: SearchModel(pool: damus_state!.pool, search: search))
-            } else {
-                EmptyView()
-            }
-        }
-    }
-    
-    var MaybeThreadView: some View {
-        Group {
-            if let evid = self.active_event_id {
-                BuildThreadV2View(damus: damus_state!, event_id: evid)
+                SearchView(appstate: damus_state!, search: SearchModel(contacts: damus_state!.contacts, pool: damus_state!.pool, search: search))
             } else {
                 EmptyView()
             }
@@ -216,68 +245,101 @@ struct ContentView: View {
             }
         }
     }
-
+    
+    func MaybeReportView(target: ReportTarget) -> some View {
+        Group {
+            if let ds = damus_state {
+                if let sec = ds.keypair.privkey {
+                    ReportView(pool: ds.pool, target: target, privkey: sec)
+                } else {
+                    EmptyView()
+                }
+            } else {
+                EmptyView()
+            }
+        }
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let damus = self.damus_state {
                 NavigationView {
-                    ZStack {
-                        VStack {
-                            MainContent(damus: damus)
-                                .toolbar() {
-                                    ToolbarItem(placement: .navigationBarLeading) {
-                                        Button {
-                                            isSideBarOpened.toggle()
-                                        } label: {
-                                            let profile_model = ProfileModel(pubkey: damus_state!.pubkey, damus: damus_state!)
-                                            let followers_model = FollowersModel(damus_state: damus_state!, target: damus_state!.pubkey)
-                                            
-                                            if let picture = damus_state?.profiles.lookup(id: pubkey)?.picture {
-                                                ProfilePicView(pubkey: damus_state!.pubkey, size: 32, highlight: .none, profiles: damus_state!.profiles, picture: picture)
-                                            } else {
-                                                Image(systemName: "person.fill")
-                                            }
-                                        }
+                    TabView { // Prevents navbar appearance change on scroll
+                        MainContent(damus: damus)
+                            .toolbar() {
+                                ToolbarItem(placement: .navigationBarLeading) {
+                                    Button {
+                                        isSideBarOpened.toggle()
+                                    } label: {
+                                        ProfilePicView(pubkey: damus_state!.pubkey, size: 32, highlight: .none, profiles: damus_state!.profiles)
+                                            .opacity(isSideBarOpened ? 0 : 1)
+                                            .animation(isSideBarOpened ? .none : .default, value: isSideBarOpened)
                                     }
-                                    
-                                    ToolbarItem(placement: .navigationBarTrailing) {
-                                        HStack(alignment: .center) {
-                                            if home.signal.signal != home.signal.max_signal {
+                                    .disabled(isSideBarOpened)
+                                }
+                                
+                                ToolbarItem(placement: .navigationBarTrailing) {
+                                    HStack(alignment: .center) {
+                                        if home.signal.signal != home.signal.max_signal {
+                                            NavigationLink(destination: RelayConfigView(state: damus_state!)) {
                                                 Text("\(home.signal.signal)/\(home.signal.max_signal)", comment: "Fraction of how many of the user's relay servers that are operational.")
                                                     .font(.callout)
                                                     .foregroundColor(.gray)
                                             }
-
+                                        }
+                                        
+                                        // maybe expand this to other timelines in the future
+                                        if selected_timeline == .search {
+                                            Button(action: {
+                                                //isFilterVisible.toggle()
+                                                self.active_sheet = .filter
+                                            }) {
+                                                // checklist, checklist.checked, lisdt.bullet, list.bullet.circle, line.3.horizontal.decrease...,  line.3.horizontail.decrease
+                                                Label(NSLocalizedString("Filter", comment: "Button label text for filtering relay servers."), systemImage: "line.3.horizontal.decrease")
+                                                    .foregroundColor(.gray)
+                                                    //.contentShape(Rectangle())
+                                            }
                                         }
                                     }
                                 }
-
-                        }
-                        
-                        Color.clear
-                        .overlay(
-                            SideMenuView(damus_state: damus, isSidebarVisible: $isSideBarOpened)
-                        )
+                            }
                     }
-                    .navigationBarHidden(isSideBarOpened ? true: false) // Would prefer a different way of doing this.
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .overlay(
+                        SideMenuView(damus_state: damus, isSidebarVisible: $isSideBarOpened.animation())
+                    )
                 }
                 .navigationViewStyle(.stack)
             
                 TabBar(new_events: $home.new_events, selected: $selected_timeline, isSidebarVisible: $isSideBarOpened, action: switch_timeline)
                     .padding([.bottom], 8)
+                    .background(Color(uiColor: .systemBackground).ignoresSafeArea())
             }
         }
+        .ignoresSafeArea(.keyboard)
         .onAppear() {
             self.connect()
-            //KingfisherManager.shared.cache.clearDiskCache()
             setup_notifications()
         }
         .sheet(item: $active_sheet) { item in
             switch item {
+            case .report(let target):
+                MaybeReportView(target: target)
             case .post:
-                PostView(replying_to: nil, references: [])
+                PostView(replying_to: nil, references: [], damus_state: damus_state!)
             case .reply(let event):
                 ReplyView(replying_to: event, damus: damus_state!)
+            case .event:
+                EventDetailView()
+            case .filter:
+                let timeline = selected_timeline ?? .home
+                if #available(iOS 16.0, *) {
+                    RelayFilterView(state: damus_state!, timeline: timeline)
+                        .presentationDetents([.height(550)])
+                        .presentationDragIndicator(.visible)
+                } else {
+                    RelayFilterView(state: damus_state!, timeline: timeline)
+                }
             }
         }
         .onOpenURL { url in
@@ -291,7 +353,11 @@ struct ContentView: View {
                     active_profile = ref.ref_id
                     profile_open = true
                 } else if ref.key == "e" {
-                    active_event_id = ref.ref_id
+                    find_event(state: damus_state!, evid: ref.ref_id, search_type: .event, find_from: nil) { ev in
+                        if let ev {
+                            active_event = ev
+                        }
+                    }
                     thread_open = true
                 }
             case .filter(let filt):
@@ -303,12 +369,7 @@ struct ContentView: View {
             
         }
         .onReceive(handle_notify(.boost)) { notif in
-            guard let privkey = self.privkey else {
-                return
-            }
-            let ev = notif.object as! NostrEvent
-            let boost = make_boost_event(pubkey: pubkey, privkey: privkey, boosted: ev)
-            self.damus_state?.pool.send(.event(boost))
+            current_boost = (notif.object as? NostrEvent)
         }
         .onReceive(handle_notify(.open_thread)) { obj in
             //let ev = obj.object as! NostrEvent
@@ -320,6 +381,18 @@ struct ContentView: View {
             self.active_sheet = .reply(ev)
         }
         .onReceive(handle_notify(.like)) { like in
+        }
+        .onReceive(handle_notify(.deleted_account)) { notif in
+            self.is_deleted_account = true
+        }
+        .onReceive(handle_notify(.report)) { notif in
+            let target = notif.object as! ReportTarget
+            self.active_sheet = .report(target)
+        }
+        .onReceive(handle_notify(.block)) { notif in
+            let pubkey = notif.object as! String
+            self.blocking = pubkey
+            self.confirm_block = true
         }
         .onReceive(handle_notify(.broadcast_event)) { obj in
             let ev = obj.object as! NostrEvent
@@ -384,6 +457,8 @@ struct ContentView: View {
             let post_res = obj.object as! NostrPostResult
             switch post_res {
             case .post(let post):
+                //let post = tup.0
+                //let to_relays = tup.1
                 print("post \(post.content)")
                 let new_ev = post_to_event(post: post, privkey: privkey, pubkey: pubkey)
                 self.damus_state?.pool.send(.event(new_ev))
@@ -395,9 +470,110 @@ struct ContentView: View {
         .onReceive(timer) { n in
             self.damus_state?.pool.connect_to_disconnected()
         }
+        .onReceive(handle_notify(.new_mutes)) { notif in
+            home.filter_muted()
+        }
+        .alert(NSLocalizedString("Deleted Account", comment: "Alert message to indicate this is a deleted account"), isPresented: $is_deleted_account) {
+            Button(NSLocalizedString("Logout", comment: "Button to close the alert that informs that the current account has been deleted.")) {
+                is_deleted_account = false
+                notify(.logout, ())
+            }
+        }
+        .alert(NSLocalizedString("User blocked", comment: "Alert message to indicate the user has been blocked"), isPresented: $user_blocked_confirm, actions: {
+            Button(NSLocalizedString("Thanks!", comment: "Button to close out of alert that informs that the action to block a user was successful.")) {
+                user_blocked_confirm = false
+            }
+        }, message: {
+            if let pubkey = self.blocking {
+                let profile = damus_state!.profiles.lookup(id: pubkey)
+                let name = Profile.displayName(profile: profile, pubkey: pubkey).username
+                Text("\(name) has been blocked", comment: "Alert message that informs a user was blocked.")
+            } else {
+                Text("User has been blocked", comment: "Alert message that informs a user was blocked.")
+            }
+        })
+        .alert(NSLocalizedString("Create new mutelist", comment: "Title of alert prompting the user to create a new mutelist."), isPresented: $confirm_overwrite_mutelist, actions: {
+            Button(NSLocalizedString("Cancel", comment: "Button to cancel out of alert that creates a new mutelist.")) {
+                confirm_overwrite_mutelist = false
+                confirm_block = false
+            }
+
+            Button(NSLocalizedString("Yes, Overwrite", comment: "Text of button that confirms to overwrite the existing mutelist.")) {
+                guard let ds = damus_state else {
+                    return
+                }
+                
+                guard let keypair = ds.keypair.to_full() else {
+                    return
+                }
+                
+                guard let pubkey = blocking else {
+                    return
+                }
+                
+                guard let mutelist = create_or_update_mutelist(keypair: keypair, mprev: nil, to_add: pubkey) else {
+                    return
+                }
+                
+                damus_state?.contacts.set_mutelist(mutelist)
+                ds.pool.send(.event(mutelist))
+
+                confirm_overwrite_mutelist = false
+                confirm_block = false
+                user_blocked_confirm = true
+            }
+        }, message: {
+            Text("No block list found, create a new one? This will overwrite any previous block lists.", comment: "Alert message prompt that asks if the user wants to create a new block list, overwriting previous block lists.")
+        })
+        .alert(NSLocalizedString("Block User", comment: "Title of alert for blocking a user."), isPresented: $confirm_block, actions: {
+            Button(NSLocalizedString("Cancel", comment: "Alert button to cancel out of alert for blocking a user."), role: .cancel) {
+                confirm_block = false
+            }
+            Button(NSLocalizedString("Block", comment: "Alert button to block a user."), role: .destructive) {
+                guard let ds = damus_state else {
+                    return
+                }
+
+                if ds.contacts.mutelist == nil {
+                    confirm_overwrite_mutelist = true
+                } else {
+                    guard let keypair = ds.keypair.to_full() else {
+                        return
+                    }
+                    guard let pubkey = blocking else {
+                        return
+                    }
+
+                    guard let ev = create_or_update_mutelist(keypair: keypair, mprev: ds.contacts.mutelist, to_add: pubkey) else {
+                        return
+                    }
+                    damus_state?.contacts.set_mutelist(ev)
+                    ds.pool.send(.event(ev))
+                }
+            }
+        }, message: {
+            if let pubkey = blocking {
+                let profile = damus_state?.profiles.lookup(id: pubkey)
+                let name = Profile.displayName(profile: profile, pubkey: pubkey).username
+                Text("Block \(name)?", comment: "Alert message prompt to ask if a user should be blocked.")
+            } else {
+                Text("Could not find user to block...", comment: "Alert message to indicate that the blocked user could not be found.")
+            }
+        })
+        .alert(NSLocalizedString("Repost", comment: "Title of alert for confirming to repost a post."), isPresented: $current_boost.mappedToBool()) {
+            Button(NSLocalizedString("Cancel", comment: "Button to cancel out of reposting a post.")) {
+                current_boost = nil
+            }
+            Button(NSLocalizedString("Repost", comment: "Button to confirm reposting a post.")) {
+                self.damus_state?.pool.send(.event(current_boost!))
+            }
+        } message: {
+            Text("Are you sure you want to repost this?", comment: "Alert message to ask if user wants to repost a post.")
+        }
     }
     
     func switch_timeline(_ timeline: Timeline) {
+        self.popToRoot()
         NotificationCenter.default.post(name: .switched_timeline, object: timeline)
         
         if timeline == self.selected_timeline {
@@ -423,21 +599,35 @@ struct ContentView: View {
 
     func connect() {
         let pool = RelayPool()
+        let metadatas = RelayMetadatas()
+        let relay_filters = RelayFilters(our_pubkey: pubkey)
         
+        let new_relay_filters = load_relay_filters(pubkey) == nil
         for relay in BOOTSTRAP_RELAYS {
-            add_relay(pool, relay)
+            if let url = URL(string: relay) {
+                add_new_relay(relay_filters: relay_filters, metadatas: metadatas, pool: pool, url: url, info: .rw, new_relay_filters: new_relay_filters)
+            }
         }
         
         pool.register_handler(sub_id: sub_id, handler: home.handle_event)
 
-        self.damus_state = DamusState(pool: pool, keypair: keypair,
-                                likes: EventCounter(our_pubkey: pubkey),
-                                boosts: EventCounter(our_pubkey: pubkey),
-                                contacts: Contacts(our_pubkey: pubkey),
-                                tips: TipCounter(our_pubkey: pubkey),
-                                profiles: Profiles(),
-                                dms: home.dms,
-                                previews: PreviewCache()
+        self.damus_state = DamusState(pool: pool,
+                                      keypair: keypair,
+                                      likes: EventCounter(our_pubkey: pubkey),
+                                      boosts: EventCounter(our_pubkey: pubkey),
+                                      contacts: Contacts(our_pubkey: pubkey),
+                                      tips: TipCounter(our_pubkey: pubkey),
+                                      profiles: Profiles(),
+                                      dms: home.dms,
+                                      previews: PreviewCache(),
+                                      zaps: Zaps(our_pubkey: pubkey),
+                                      lnurls: LNUrls(),
+                                      settings: UserSettingsStore(),
+                                      relay_filters: relay_filters,
+                                      relay_metadata: metadatas,
+                                      drafts: Drafts(),
+                                      events: EventCache(),
+                                      bookmarks: BookmarksManager(pubkey: pubkey)
         )
         home.damus_state = self.damus_state!
         
@@ -586,3 +776,68 @@ func setup_notifications() {
     }
 }
 
+
+func find_event(state: DamusState, evid: String, search_type: SearchType, find_from: [String]?, callback: @escaping (NostrEvent?) -> ()) {
+    if let ev = state.events.lookup(evid) {
+        callback(ev)
+        return
+    }
+    
+    let subid = UUID().description
+    
+    var has_event = false
+    
+    var filter = search_type == .event ? NostrFilter.filter_ids([ evid ]) : NostrFilter.filter_authors([ evid ])
+    
+    if search_type == .profile {
+        filter.kinds = [0]
+    }
+    
+    filter.limit = 1
+    var attempts = 0
+    
+    state.pool.subscribe_to(sub_id: subid, filters: [filter], to: find_from) { relay_id, res  in
+        guard case .nostr_event(let ev) = res else {
+            return
+        }
+        
+        guard ev.subid == subid else {
+            return
+        }
+        
+        switch ev {
+        case .event(_, let ev):
+            has_event = true
+            callback(ev)
+            state.pool.unsubscribe(sub_id: subid)
+        case .eose:
+            if !has_event {
+                attempts += 1
+                if attempts == state.pool.descriptors.count / 2 {
+                    callback(nil)
+                }
+                state.pool.unsubscribe(sub_id: subid, to: [relay_id])
+            }
+        case .notice(_):
+            break
+        }
+
+    }
+}
+
+
+func timeline_name(_ timeline: Timeline?) -> String {
+    guard let timeline else {
+        return ""
+    }
+    switch timeline {
+    case .home:
+        return "Home"
+    case .notifications:
+        return "Notifications"
+    case .search:
+        return "Universe 🛸"
+    case .dms:
+        return "DMs"
+    }
+}

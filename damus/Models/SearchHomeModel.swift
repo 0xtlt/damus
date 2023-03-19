@@ -10,7 +10,7 @@ import Foundation
 
 /// The data model for the SearchHome view, typically something global-like
 class SearchHomeModel: ObservableObject {
-    @Published var events: [NostrEvent] = []
+    var events: EventHolder = EventHolder()
     @Published var loading: Bool = false
 
     var seen_pubkey: Set<String> = Set()
@@ -30,9 +30,15 @@ class SearchHomeModel: ObservableObject {
         return filter
     }
     
+    func filter_muted() {
+        events.filter { should_show_event(contacts: damus_state.contacts, ev: $0) }
+        self.objectWillChange.send()
+    }
+    
     func subscribe() {
         loading = true
-        damus_state.pool.subscribe(sub_id: base_subid, filters: [get_base_filter()], handler: handle_event)
+        let to_relays = determine_to_relays(pool: damus_state.pool, filters: damus_state.relay_filters)
+        damus_state.pool.subscribe(sub_id: base_subid, filters: [get_base_filter()], handler: handle_event, to: to_relays)
     }
 
     func unsubscribe(to: String? = nil) {
@@ -50,14 +56,14 @@ class SearchHomeModel: ObservableObject {
             guard sub_id == self.base_subid || sub_id == self.profiles_subid else {
                 return
             }
-            if ev.is_textlike && ev.should_show_event && !ev.is_reply(nil) {
+            if ev.is_textlike && should_show_event(contacts: damus_state.contacts, ev: ev) && !ev.is_reply(nil) {
                 if seen_pubkey.contains(ev.pubkey) {
                     return
                 }
                 seen_pubkey.insert(ev.pubkey)
                 
-                let _ = insert_uniq_sorted_event(events: &events, new_ev: ev) {
-                    $0.created_at > $1.created_at
+                if self.events.insert(ev) {
+                    self.objectWillChange.send()
                 }
             }
         case .notice(let msg):
@@ -70,7 +76,7 @@ class SearchHomeModel: ObservableObject {
                 // global events are not realtime
                 unsubscribe(to: relay_id)
                 
-                load_profiles(profiles_subid: profiles_subid, relay_id: relay_id, events: events, damus_state: damus_state)
+                load_profiles(profiles_subid: profiles_subid, relay_id: relay_id, load: .from_events(events.all_events), damus_state: damus_state)
             }
             
             
@@ -92,8 +98,31 @@ func find_profiles_to_fetch_pk(profiles: Profiles, event_pubkeys: [String]) -> [
     
     return Array(pubkeys)
 }
+
+func find_profiles_to_fetch(profiles: Profiles, load: PubkeysToLoad) -> [String] {
+    switch load {
+    case .from_events(let events):
+        return find_profiles_to_fetch_from_events(profiles: profiles, events: events)
+    case .from_keys(let pks):
+        return find_profiles_to_fetch_from_keys(profiles: profiles, pks: pks)
+    }
+}
+
+func find_profiles_to_fetch_from_keys(profiles: Profiles, pks: [String]) -> [String] {
+    var pubkeys = Set<String>()
     
-func find_profiles_to_fetch(profiles: Profiles, events: [NostrEvent]) -> [String] {
+    for pk in pks {
+        if profiles.lookup(id: pk) != nil {
+            continue
+        }
+        
+        pubkeys.insert(pk)
+    }
+    
+    return Array(pubkeys)
+}
+
+func find_profiles_to_fetch_from_events(profiles: Profiles, events: [NostrEvent]) -> [String] {
     var pubkeys = Set<String>()
     
     for ev in events {
@@ -107,9 +136,14 @@ func find_profiles_to_fetch(profiles: Profiles, events: [NostrEvent]) -> [String
     return Array(pubkeys)
 }
 
-func load_profiles(profiles_subid: String, relay_id: String, events: [NostrEvent], damus_state: DamusState) {
+enum PubkeysToLoad {
+    case from_events([NostrEvent])
+    case from_keys([String])
+}
+
+func load_profiles(profiles_subid: String, relay_id: String, load: PubkeysToLoad, damus_state: DamusState) {
     var filter = NostrFilter.filter_profiles
-    let authors = find_profiles_to_fetch(profiles: damus_state.profiles, events: events)
+    let authors = find_profiles_to_fetch(profiles: damus_state.profiles, load: load)
     filter.authors = authors
     
     guard !authors.isEmpty else {
@@ -125,7 +159,7 @@ func load_profiles(profiles_subid: String, relay_id: String, events: [NostrEvent
             }
             
             if ev.known_kind == .metadata {
-                process_metadata_event(profiles: damus_state.profiles, ev: ev)
+                process_metadata_event(our_pubkey: damus_state.pubkey, profiles: damus_state.profiles, ev: ev)
             }
             
         }

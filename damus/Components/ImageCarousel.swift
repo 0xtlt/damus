@@ -12,14 +12,14 @@ import Kingfisher
 struct ShareSheet: UIViewControllerRepresentable {
     typealias Callback = (_ activityType: UIActivity.ActivityType?, _ completed: Bool, _ returnedItems: [Any]?, _ error: Error?) -> Void
     
-    let activityItems: [URL]
+    let activityItems: [URL?]
     let callback: Callback? = nil
     let applicationActivities: [UIActivity]? = nil
     let excludedActivityTypes: [UIActivity.ActivityType]? = nil
     
     func makeUIViewController(context: Context) -> UIActivityViewController {
         let controller = UIActivityViewController(
-            activityItems: activityItems,
+            activityItems: activityItems as [Any],
             applicationActivities: applicationActivities)
         controller.excludedActivityTypes = excludedActivityTypes
         controller.completionWithItemsHandler = callback
@@ -32,7 +32,7 @@ struct ShareSheet: UIViewControllerRepresentable {
 }
 
 struct ImageContextMenuModifier: ViewModifier {
-    let url: URL
+    let url: URL?
     let image: UIImage?
     @Binding var showShareSheet: Bool
     
@@ -64,8 +64,12 @@ struct ImageContextMenuModifier: ViewModifier {
     }
 }
 
-struct ImageViewer: View {
-    let urls: [URL]
+private struct ImageContainerView: View {
+    
+    let url: URL?
+    
+    @State private var image: UIImage?
+    @State private var showShareSheet = false
     
     private struct ImageHandler: ImageModifier {
         @Binding var handler: UIImage?
@@ -75,45 +79,110 @@ struct ImageViewer: View {
             return image
         }
     }
-
-    @State private var image: UIImage?
-    @State private var showShareSheet = false
     
-    func onShared(completed: Bool) -> Void {
-        if (completed) {
-            showShareSheet = false
+    var body: some View {
+        
+        KFAnimatedImage(url)
+            .imageContext(.note)
+            .configure { view in
+                view.framePreloadCount = 3
+            }
+            .imageModifier(ImageHandler(handler: $image))
+            .clipped()
+            .modifier(ImageContextMenuModifier(url: url, image: image, showShareSheet: $showShareSheet))
+            .sheet(isPresented: $showShareSheet) {
+                ShareSheet(activityItems: [url])
+            }
+    }
+}
+
+struct ImageView: View {
+    
+    let urls: [URL?]
+    
+    @Environment(\.presentationMode) var presentationMode
+    
+    @State private var selectedIndex = 0
+    @State var showMenu = true
+    
+    var navBarView: some View {
+        VStack {
+            HStack {
+                Text(urls[selectedIndex]?.lastPathComponent ?? "")
+                    .bold()
+                
+                Spacer()
+                
+                Button(action: {
+                    presentationMode.wrappedValue.dismiss()
+                }, label: {
+                    Image(systemName: "xmark")
+                })
+            }
+            .padding()
+            
+            Divider()
+                .ignoresSafeArea()
         }
+        .background(.regularMaterial)
+    }
+    
+    var tabViewIndicator: some View {
+        HStack(spacing: 10) {
+            ForEach(urls.indices, id: \.self) { index in
+                Capsule()
+                    .fill(index == selectedIndex ? Color(UIColor.label) : Color.secondary)
+                    .frame(width: 7, height: 7)
+            }
+        }
+        .padding()
+        .background(.regularMaterial)
+        .clipShape(Capsule())
     }
     
     var body: some View {
-        TabView {
-            ForEach(urls, id: \.absoluteString) { url in
-                VStack{
-                    Text(url.lastPathComponent)
-                    
-                    KFAnimatedImage(url)
-                        .configure { view in
-                            view.framePreloadCount = 3
-                        }
-                        .cacheOriginalImage()
-                        .imageModifier(ImageHandler(handler: $image))
-                        .loadDiskFileSynchronously()
-                        .scaleFactor(UIScreen.main.scale)
-                        .fade(duration: 0.1)
-                        .aspectRatio(contentMode: .fit)
-                        .tabItem {
-                            Text(url.absoluteString)
-                        }
-                        .id(url.absoluteString)
-                        .modifier(ImageContextMenuModifier(url: url, image: image, showShareSheet: $showShareSheet))
-                        .sheet(isPresented: $showShareSheet) {
-                            ShareSheet(activityItems: [url])
-                        }
-
+        ZStack {
+            Color(.systemBackground)
+                .ignoresSafeArea()
+            
+            TabView(selection: $selectedIndex) {
+                ForEach(urls.indices, id: \.self) { index in
+                    ZoomableScrollView {
+                        ImageContainerView(url: urls[index])
+                            .aspectRatio(contentMode: .fit)
+                            .padding(.top, Theme.safeAreaInsets?.top)
+                            .padding(.bottom, Theme.safeAreaInsets?.bottom)
+                    }
+                    .modifier(SwipeToDismissModifier(minDistance: 50, onDismiss: {
+                        presentationMode.wrappedValue.dismiss()
+                    }))
+                    .ignoresSafeArea()
+                    .tag(index)
                 }
             }
+            .ignoresSafeArea()
+            .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+            .gesture(TapGesture(count: 2).onEnded {
+                // Prevents menu from hiding on double tap
+            })
+            .gesture(TapGesture(count: 1).onEnded {
+                showMenu.toggle()
+            })
+            .overlay(
+                VStack {
+                    if showMenu {
+                        navBarView
+                        Spacer()
+                        
+                        if (urls.count > 1) {
+                            tabViewIndicator
+                        }
+                    }
+                }
+                .animation(.easeInOut, value: showMenu)
+                .padding(.bottom, Theme.safeAreaInsets?.bottom)
+            )
         }
-        .tabViewStyle(PageTabViewStyle())
     }
 }
 
@@ -130,31 +199,30 @@ struct ImageCarousel: View {
                     .foregroundColor(Color.clear)
                     .overlay {
                         KFAnimatedImage(url)
+                            .imageContext(.note)
+                            .cancelOnDisappear(true)
                             .configure { view in
                                 view.framePreloadCount = 3
                             }
-                            .cacheOriginalImage()
-                            .loadDiskFileSynchronously()
-                            .scaleFactor(UIScreen.main.scale)
-                            .fade(duration: 0.1)
                             .aspectRatio(contentMode: .fit)
+                            .cornerRadius(10)
                             .tabItem {
                                 Text(url.absoluteString)
                             }
                             .id(url.absoluteString)
-                            .contextMenu {
-                                Button(NSLocalizedString("Copy Image", comment: "Context menu option to copy an image to clipboard.")) {
-                                    UIPasteboard.general.string = url.absoluteString
-                                }
-                            }
+//                            .contextMenu {
+//                                Button(NSLocalizedString("Copy Image", comment: "Context menu option to copy an image to clipboard.")) {
+//                                    UIPasteboard.general.string = url.absoluteString
+//                                }
+//                            }
                     }
             }
         }
-        .cornerRadius(10)
-        .sheet(isPresented: $open_sheet) {
-            ImageViewer(urls: urls)
+        .fullScreenCover(isPresented: $open_sheet) {
+            ImageView(urls: urls)
         }
         .frame(height: 200)
+        .clipped()
         .onTapGesture {
             open_sheet = true
         }
@@ -164,6 +232,6 @@ struct ImageCarousel: View {
 
 struct ImageCarousel_Previews: PreviewProvider {
     static var previews: some View {
-        ImageCarousel(urls: [URL(string: "https://jb55.com/red-me.jpg")!])
+        ImageCarousel(urls: [URL(string: "https://jb55.com/red-me.jpg")!,URL(string: "https://jb55.com/red-me.jpg")!])
     }
 }

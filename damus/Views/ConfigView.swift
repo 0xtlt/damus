@@ -5,193 +5,369 @@
 //  Created by William Casarin on 2022-06-09.
 //
 import AVFoundation
-import SwiftUI
 import Kingfisher
+import SwiftUI
+import LocalAuthentication
+import Combine
 
 struct ConfigView: View {
     let state: DamusState
+    @Environment(\.colorScheme) var colorScheme
     @Environment(\.dismiss) var dismiss
-    @State var show_add_relay: Bool = false
     @State var confirm_logout: Bool = false
-    @State var new_relay: String = ""
+    @State var delete_account_warning: Bool = false
+    @State var confirm_delete_account: Bool = false
     @State var show_privkey: Bool = false
+    @State var has_authenticated_locally: Bool = false
+    @State var show_api_key: Bool = false
     @State var privkey: String
     @State var privkey_copied: Bool = false
     @State var pubkey_copied: Bool = false
-    @State var relays: [RelayDescriptor]
-    @EnvironmentObject var user_settings: UserSettingsStore
+    @State var delete_text: String = ""
+    @State var default_zap_amount: String
+    
+    @ObservedObject var settings: UserSettingsStore
     
     let generator = UIImpactFeedbackGenerator(style: .light)
     
     init(state: DamusState) {
         self.state = state
+        let zap_amt = get_default_zap_amount(pubkey: state.pubkey).map({ "\($0)" }) ?? "1000"
+        _default_zap_amount = State(initialValue: zap_amt)
         _privkey = State(initialValue: self.state.keypair.privkey_bech32 ?? "")
-        _relays = State(initialValue: state.pool.descriptors)
+        _settings = ObservedObject(initialValue: state.settings)
+    }
+    
+    func textColor() -> Color {
+        colorScheme == .light ? Color("DamusBlack") : Color("DamusWhite")
+    }
+
+    func authenticateLocally(completion: @escaping (Bool) -> Void) {
+        // Need to authenticate only once while ConfigView is presented
+        guard !has_authenticated_locally else {
+            completion(true)
+            return
+        }
+        let context = LAContext()
+        if context.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) {
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: NSLocalizedString("Local authentication to access private key", comment: "Face ID usage description shown when trying to access private key")) { success, error in
+                DispatchQueue.main.async {
+                    has_authenticated_locally = success
+                    completion(success)
+                }
+            }
+        } else {
+            // If there's no authentication set up on the device, let the user copy the key without it
+            has_authenticated_locally = true
+            completion(true)
+        }
     }
     
     // TODO: (jb55) could be more general but not gonna worry about it atm
     func CopyButton(is_pk: Bool) -> some View {
         return Button(action: {
-            UIPasteboard.general.string = is_pk ? self.state.keypair.pubkey_bech32 : self.privkey
-            self.privkey_copied = !is_pk
-            self.pubkey_copied = is_pk
-            generator.impactOccurred()
+            let copyKey = {
+                UIPasteboard.general.string = is_pk ? self.state.keypair.pubkey_bech32 : self.privkey
+                self.privkey_copied = !is_pk
+                self.pubkey_copied = is_pk
+                generator.impactOccurred()
+            }
+            if has_authenticated_locally {
+                copyKey()
+            } else {
+                authenticateLocally { success in
+                    if success {
+                        copyKey()
+                    }
+                }
+            }
         }) {
             let copied = is_pk ? self.pubkey_copied : self.privkey_copied
             Image(systemName: copied ? "checkmark.circle" : "doc.on.doc")
         }
     }
-    
-    var recommended: [RelayDescriptor] {
-        let rs: [RelayDescriptor] = []
-        return BOOTSTRAP_RELAYS.reduce(into: rs) { (xs, x) in
-            if let _ = state.pool.get_relay(x) {
-            } else {
-                xs.append(RelayDescriptor(url: URL(string: x)!, info: .rw))
-            }
-        }
-    }
-    
+
     var body: some View {
         ZStack(alignment: .leading) {
             Form {
-                Section {
-                    List(Array(relays), id: \.url) { relay in
-                        RelayView(state: state, relay: relay.url.absoluteString)
-                    }
-                } header: {
-                    HStack {
-                        Text("Relays", comment: "Header text for relay server list for configuration.")
-                        Spacer()
-                        Button(action: { show_add_relay = true }) {
-                            Image(systemName: "plus")
-                                .foregroundColor(.accentColor)
-                        }
-                    }
-                }
-                
-                if recommended.count > 0 {
-                    Section(NSLocalizedString("Recommended Relays", comment: "Section title for recommend relay servers that could be added as part of configuration")) {
-                        List(recommended, id: \.url) { r in
-                            RecommendedRelayView(damus: state, relay: r.url.absoluteString)
-                        }
-                    }
-                }
-                
                 Section(NSLocalizedString("Public Account ID", comment: "Section title for the user's public account ID.")) {
                     HStack {
                         Text(state.keypair.pubkey_bech32)
-                        
+
                         CopyButton(is_pk: true)
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 5))
                 }
-                
+
                 if let sec = state.keypair.privkey_bech32 {
                     Section(NSLocalizedString("Secret Account Login Key", comment: "Section title for user's secret account login key.")) {
                         HStack {
-                            if show_privkey == false {
-                                SecureField(NSLocalizedString("PrivateKey", comment: "Title of the secure field that holds the user's private key."), text: $privkey)
+                            if show_privkey == false || !has_authenticated_locally {
+                                SecureField(NSLocalizedString("Private Key", comment: "Title of the secure field that holds the user's private key."), text: $privkey)
                                     .disabled(true)
                             } else {
                                 Text(sec)
                                     .clipShape(RoundedRectangle(cornerRadius: 5))
                             }
-                            
+
                             CopyButton(is_pk: false)
                         }
-                        
+
                         Toggle(NSLocalizedString("Show", comment: "Toggle to show or hide user's secret account login key."), isOn: $show_privkey)
+                            .onChange(of: show_privkey) { newValue in
+                                if newValue {
+                                    authenticateLocally { success in
+                                        show_privkey = success
+                                    }
+                                }
+                            }
                     }
                 }
-                
+
                 Section(NSLocalizedString("Wallet Selector", comment: "Section title for selection of wallet.")) {
-                    Toggle(NSLocalizedString("Show wallet selector", comment: "Toggle to show or hide selection of wallet."), isOn: $user_settings.show_wallet_selector).toggleStyle(.switch)
+                    Toggle(NSLocalizedString("Show wallet selector", comment: "Toggle to show or hide selection of wallet."), isOn: $settings.show_wallet_selector).toggleStyle(.switch)
                     Picker(NSLocalizedString("Select default wallet", comment: "Prompt selection of user's default wallet"),
-                           selection: $user_settings.default_wallet) {
+                           selection: $settings.default_wallet) {
                         ForEach(Wallet.allCases, id: \.self) { wallet in
                             Text(wallet.model.displayName)
                                 .tag(wallet.model.tag)
                         }
                     }
                 }
-
-                Section(NSLocalizedString("Left Handed", comment: "Moves the post button to the left side of the screen")) {
-                    Toggle(NSLocalizedString("Left Handed", comment: "Moves the post button to the left side of the screen"), isOn: $user_settings.left_handed)
-                        .toggleStyle(.switch)
+                
+                Section(NSLocalizedString("Default Zap Amount in sats", comment: "Section title for zap configuration")) {
+                    TextField(String("1000"), text: $default_zap_amount)
+                        .keyboardType(.numberPad)
+                        .onReceive(Just(default_zap_amount)) { newValue in
+                            if let parsed = handle_string_amount(new_value: newValue) {
+                                self.default_zap_amount = String(parsed)
+                                set_default_zap_amount(pubkey: self.state.pubkey, amount: parsed)
+                            }
+                        }
                 }
 
-                Section(NSLocalizedString("Clear Cache", comment: "Section title for clearing cached data.")) {
-                    Button(NSLocalizedString("Clear", comment: "Button for clearing cached data.")) {
-                        KingfisherManager.shared.cache.clearMemoryCache()
-                        KingfisherManager.shared.cache.clearDiskCache()
-                        KingfisherManager.shared.cache.cleanExpiredDiskCache()
+                Section(NSLocalizedString("Translations", comment: "Section title for selecting the translation service.")) {
+                    Picker(NSLocalizedString("Service", comment: "Prompt selection of translation service provider."), selection: $settings.translation_service) {
+                        ForEach(TranslationService.allCases, id: \.self) { server in
+                            Text(server.model.displayName)
+                                .tag(server.model.tag)
+                        }
+                    }
+
+                    if settings.translation_service == .libretranslate {
+                        Picker(NSLocalizedString("Server", comment: "Prompt selection of LibreTranslate server to perform machine translations on notes"), selection: $settings.libretranslate_server) {
+                            ForEach(LibreTranslateServer.allCases, id: \.self) { server in
+                                Text(server.model.displayName)
+                                    .tag(server.model.tag)
+                            }
+                        }
+
+                        if settings.libretranslate_server == .custom {
+                            TextField(NSLocalizedString("URL", comment: "Example URL to LibreTranslate server"), text: $settings.libretranslate_url)
+                                .disableAutocorrection(true)
+                                .autocapitalization(UITextAutocapitalizationType.none)
+                        }
+
+                        SecureField(NSLocalizedString("API Key (optional)", comment: "Prompt for optional entry of API Key to use translation server."), text: $settings.libretranslate_api_key)
+                            .disableAutocorrection(true)
+                            .disabled(settings.translation_service != .libretranslate)
+                            .autocapitalization(UITextAutocapitalizationType.none)
+                    }
+
+                    if settings.translation_service == .deepl {
+                        Picker(NSLocalizedString("Plan", comment: "Prompt selection of DeepL subscription plan to perform machine translations on notes"), selection: $settings.deepl_plan) {
+                            ForEach(DeepLPlan.allCases, id: \.self) { server in
+                                Text(server.model.displayName)
+                                    .tag(server.model.tag)
+                            }
+                        }
+
+                        SecureField(NSLocalizedString("API Key (required)", comment: "Prompt for required entry of API Key to use translation server."), text: $settings.deepl_api_key)
+                            .disableAutocorrection(true)
+                            .disabled(settings.translation_service != .deepl)
+                            .autocapitalization(UITextAutocapitalizationType.none)
+
+                        if settings.deepl_api_key == "" {
+                            Link(NSLocalizedString("Get API Key", comment: "Button to navigate to DeepL website to get a translation API key."), destination: URL(string: "https://www.deepl.com/pro-api")!)
+                        }
                     }
                 }
 
-                Section(NSLocalizedString("Reset", comment: "Section title for resetting the user")) {
-                    Button(NSLocalizedString("Logout", comment: "Button to logout the user.")) {
-                        confirm_logout = true
+                Section(NSLocalizedString("Miscellaneous", comment: "Section header for miscellaneous user configuration")) {
+                    Toggle(NSLocalizedString("Left Handed", comment: "Moves the post button to the left side of the screen"), isOn: $settings.left_handed)
+                        .toggleStyle(.switch)
+                    Toggle(NSLocalizedString("Zap Vibration", comment: "Setting to enable vibration on zap"), isOn: $settings.zap_vibration)
+                        .toggleStyle(.switch)
+                }
+
+                Section(NSLocalizedString("Images", comment: "Section title for images configuration.")) {
+                    Toggle(NSLocalizedString("Disable animations", comment: "Button to disable image animation"), isOn: $settings.disable_animation)
+                        .toggleStyle(.switch)
+                        .onChange(of: settings.disable_animation) { _ in
+                            clear_kingfisher_cache()
+                        }
+                    Toggle(NSLocalizedString("Always show images", comment: "Setting to always show and never blur images"), isOn: $settings.always_show_images)
+                        .toggleStyle(.switch)
+
+                    Button(NSLocalizedString("Clear Cache", comment: "Button to clear image cache.")) {
+                        clear_kingfisher_cache()
+                    }
+                    
+                    Picker(NSLocalizedString("Select image uploader", comment: "Prompt selection of user's image uploader"),
+                           selection: $settings.default_image_uploader) {
+                        ForEach(ImageUploader.allCases, id: \.self) { uploader in
+                            Text(uploader.model.displayName)
+                                .tag(uploader.model.tag)
+                        }
+                    }
+                }
+                
+                Section(NSLocalizedString("Sign Out", comment: "Section title for signing out")) {
+                    Button(action: {
+                        if state.keypair.privkey == nil {
+                            notify(.logout, ())
+                        } else {
+                            confirm_logout = true
+                        }
+                    }, label: {
+                        Label(NSLocalizedString("Sign out", comment: "Sidebar menu label to sign out of the account."), systemImage: "pip.exit")
+                            .foregroundColor(textColor())
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    })
+                }
+
+                if state.is_privkey_user {
+                    Section(NSLocalizedString("Permanently Delete Account", comment: "Section title for deleting the user")) {
+                        Button(NSLocalizedString("Delete Account", comment: "Button to delete the user's account."), role: .destructive) {
+                            delete_account_warning = true
+                        }
+                    }
+                }
+
+                if let bundleShortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"], let bundleVersion = Bundle.main.infoDictionary?["CFBundleVersion"] {
+                    Section(NSLocalizedString("Version", comment: "Section title for displaying the version number of the Damus app.")) {
+                        Text(verbatim: "\(bundleShortVersion) (\(bundleVersion))")
                     }
                 }
             }
         }
         .navigationTitle(NSLocalizedString("Settings", comment: "Navigation title for Settings view."))
         .navigationBarTitleDisplayMode(.large)
+        .alert(NSLocalizedString("WARNING:\n\nTHIS WILL SIGN AN EVENT THAT DELETES THIS ACCOUNT.\n\nYOU WILL NO LONGER BE ABLE TO LOG INTO DAMUS USING THIS ACCOUNT KEY.\n\n ARE YOU SURE YOU WANT TO CONTINUE?", comment: "Alert for deleting the users account."), isPresented: $delete_account_warning) {
+
+            Button(NSLocalizedString("Cancel", comment: "Cancel deleting the user."), role: .cancel) {
+                delete_account_warning = false
+            }
+            Button(NSLocalizedString("Continue", comment: "Continue with deleting the user.")) {
+                confirm_delete_account = true
+            }
+        }
+        .alert(NSLocalizedString("Permanently Delete Account", comment: "Alert for deleting the users account."), isPresented: $confirm_delete_account) {
+            TextField(NSLocalizedString("Type DELETE to delete", comment: "Text field prompt asking user to type the word DELETE to confirm that they want to proceed with deleting their account. The all caps lock DELETE word should not be translated. Everything else should."), text: $delete_text)
+            Button(NSLocalizedString("Cancel", comment: "Cancel deleting the user."), role: .cancel) {
+                confirm_delete_account = false
+            }
+            Button(NSLocalizedString("Delete", comment: "Button for deleting the users account."), role: .destructive) {
+                guard let full_kp = state.keypair.to_full() else {
+                    return
+                }
+                
+                guard delete_text == "DELETE" else {
+                    return
+                }
+                
+                let ev = created_deleted_account_profile(keypair: full_kp)
+                state.pool.send(.event(ev))
+                notify(.logout, ())
+            }
+        }
         .alert(NSLocalizedString("Logout", comment: "Alert for logging out the user."), isPresented: $confirm_logout) {
-            Button(NSLocalizedString("Cancel", comment: "Cancel out of logging out the user.")) {
+            Button(NSLocalizedString("Cancel", comment: "Cancel out of logging out the user."), role: .cancel) {
                 confirm_logout = false
             }
-                   Button(NSLocalizedString("Logout", comment: "Button for logging out the user.")) {
+            Button(NSLocalizedString("Logout", comment: "Button for logging out the user."), role: .destructive) {
                 notify(.logout, ())
             }
         } message: {
                 Text("Make sure your nsec account key is saved before you logout or you will lose access to this account", comment: "Reminder message in alert to get customer to verify that their private security account key is saved saved before logging out.")
         }
-        .sheet(isPresented: $show_add_relay) {
-            AddRelayView(show_add_relay: $show_add_relay, relay: $new_relay) { m_relay in
-                guard var relay = m_relay else {
-                    return
-                }
-                
-                if relay.starts(with: "wss://") == false {
-                    relay = "wss://" + relay
-                }
-                
-                guard let url = URL(string: relay) else {
-                    return
-                }
-                                
-                guard let ev = state.contacts.event else {
-                    return
-                }
-                
-                guard let privkey = state.keypair.privkey else {
-                    return
-                }
-                
-                let info = RelayInfo.rw
-                
-                guard (try? state.pool.add_relay(url, info: info)) != nil else {
-                    return
-                }
-                
-                state.pool.connect(to: [relay])
-                
-                guard let new_ev = add_relay(ev: ev, privkey: privkey, current_relays: state.pool.descriptors, relay: relay, info: info) else {
-                    return
-                }
-                
-                process_contact_event(pool: state.pool, contacts: state.contacts, pubkey: state.pubkey, ev: ev)
-                
-                state.pool.send(.event(new_ev))
-            }
-        }
         .onReceive(handle_notify(.switched_timeline)) { _ in
             dismiss()
         }
-        .onReceive(handle_notify(.relays_changed)) { _ in
-            self.relays = state.pool.descriptors
+    }
+
+    var libretranslate_view: some View {
+        VStack {
+            Picker(NSLocalizedString("Server", comment: "Prompt selection of LibreTranslate server to perform machine translations on notes"), selection: $settings.libretranslate_server) {
+                ForEach(LibreTranslateServer.allCases, id: \.self) { server in
+                    Text(server.model.displayName)
+                        .tag(server.model.tag)
+                }
+            }
+
+            TextField(NSLocalizedString("URL", comment: "Example URL to LibreTranslate server"), text: $settings.libretranslate_url)
+                .disableAutocorrection(true)
+                .disabled(settings.libretranslate_server != .custom)
+                .autocapitalization(UITextAutocapitalizationType.none)
+            HStack {
+                let libretranslate_api_key_placeholder = NSLocalizedString("API Key (optional)", comment: "Prompt for optional entry of API Key to use translation server.")
+                if show_api_key {
+                    TextField(libretranslate_api_key_placeholder, text: $settings.libretranslate_api_key)
+                        .disableAutocorrection(true)
+                        .autocapitalization(UITextAutocapitalizationType.none)
+                    if settings.libretranslate_api_key != "" {
+                        Button(NSLocalizedString("Hide API Key", comment: "Button to hide the LibreTranslate server API key.")) {
+                            show_api_key = false
+                        }
+                    }
+                } else {
+                    SecureField(libretranslate_api_key_placeholder, text: $settings.libretranslate_api_key)
+                        .disableAutocorrection(true)
+                        .autocapitalization(UITextAutocapitalizationType.none)
+                    if settings.libretranslate_api_key != "" {
+                        Button(NSLocalizedString("Show API Key", comment: "Button to show the LibreTranslate server API key.")) {
+                            show_api_key = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    var deepl_view: some View {
+        VStack {
+            Picker(NSLocalizedString("Plan", comment: "Prompt selection of DeepL subscription plan to perform machine translations on notes"), selection: $settings.deepl_plan) {
+                ForEach(DeepLPlan.allCases, id: \.self) { server in
+                    Text(server.model.displayName)
+                        .tag(server.model.tag)
+                }
+            }
+
+            HStack {
+                let deepl_api_key_placeholder = NSLocalizedString("API Key (required)", comment: "Prompt for required entry of API Key to use translation server.")
+                if show_api_key {
+                    TextField(deepl_api_key_placeholder, text: $settings.deepl_api_key)
+                        .disableAutocorrection(true)
+                        .autocapitalization(UITextAutocapitalizationType.none)
+                    if settings.deepl_api_key != "" {
+                        Button(NSLocalizedString("Hide API Key", comment: "Button to hide the DeepL translation API key.")) {
+                            show_api_key = false
+                        }
+                    }
+                } else {
+                    SecureField(deepl_api_key_placeholder, text: $settings.deepl_api_key)
+                        .disableAutocorrection(true)
+                        .autocapitalization(UITextAutocapitalizationType.none)
+                    if settings.deepl_api_key != "" {
+                        Button(NSLocalizedString("Show API Key", comment: "Button to show the DeepL translation API key.")) {
+                            show_api_key = true
+                        }
+                    }
+                }
+                if settings.deepl_api_key == "" {
+                    Link(NSLocalizedString("Get API Key", comment: "Button to navigate to DeepL website to get a translation API key."), destination: URL(string: "https://www.deepl.com/pro-api")!)
+                }
+            }
         }
     }
 }
@@ -202,4 +378,26 @@ struct ConfigView_Previews: PreviewProvider {
             ConfigView(state: test_damus_state())
         }
     }
+}
+
+
+func handle_string_amount(new_value: String) -> Int? {
+    let digits = Set("0123456789")
+    let filtered = new_value.filter { digits.contains($0) }
+
+    if filtered == "" {
+        return nil
+    }
+
+    guard let amt = Int(filtered) else {
+        return nil
+    }
+    
+    return amt
+}
+
+func clear_kingfisher_cache() -> Void {
+    KingfisherManager.shared.cache.clearMemoryCache()
+    KingfisherManager.shared.cache.clearDiskCache()
+    KingfisherManager.shared.cache.cleanExpiredDiskCache()
 }

@@ -15,28 +15,9 @@ struct FollowUserView: View {
 
     var body: some View {
         HStack {
-            let pmodel = ProfileModel(pubkey: target.pubkey, damus: damus_state)
-            let followers = FollowersModel(damus_state: damus_state, target: target.pubkey)
-            let pv = ProfileView(damus_state: damus_state, profile: pmodel, followers: followers)
+            UserView(damus_state: damus_state, pubkey: target.pubkey)
             
-            NavigationLink(destination: pv) {
-                ProfilePicView(pubkey: target.pubkey, size: PFP_SIZE, highlight: .none, profiles: damus_state.profiles)
-            
-                VStack(alignment: .leading) {
-                    let profile = damus_state.profiles.lookup(id: target.pubkey)
-                    ProfileName(pubkey: target.pubkey, profile: profile, damus: damus_state, show_friend_confirmed: false, show_nip5_domain: false)
-                    if let about = profile?.about {
-                        Text(FollowUserView.markdown.process(about))
-                            .lineLimit(3)
-                            .font(.footnote)
-                    }
-                }
-                
-                Spacer()
-            }
-            .buttonStyle(PlainButtonStyle())
-            
-            FollowButtonView(target: target, follow_state: damus_state.contacts.follow_state(target.pubkey))
+            FollowButtonView(target: target, follows_you: false, follow_state: damus_state.contacts.follow_state(target.pubkey))
         }
     }
 }
@@ -48,7 +29,6 @@ struct FollowersView: View {
     @EnvironmentObject var followers: FollowersModel
     
     var body: some View {
-        let profile = damus_state.profiles.lookup(id: whos)
         ScrollView {
             LazyVStack(alignment: .leading) {
                 ForEach(followers.contacts ?? [], id: \.self) { pk in
@@ -57,7 +37,7 @@ struct FollowersView: View {
             }
             .padding()
         }
-        .navigationBarTitle(NSLocalizedString("\(Profile.displayName(profile: profile, pubkey: whos))'s Followers", comment: "Navigation bar title for view that shows who is following a user."))
+        .navigationBarTitle(NSLocalizedString("Followers", comment: "Navigation bar title for view that shows who is following a user."))
         .onAppear {
             followers.subscribe()
         }
@@ -75,8 +55,6 @@ struct FollowingView: View {
     let whos: String
     
     var body: some View {
-        let profile = damus_state.profiles.lookup(id: whos)
-        let who = Profile.displayName(profile: profile, pubkey: whos)
         ScrollView {
             LazyVStack(alignment: .leading) {
                 ForEach(following.contacts, id: \.self) { pk in
@@ -91,7 +69,7 @@ struct FollowingView: View {
         .onDisappear {
             following.unsubscribe()
         }
-        .navigationBarTitle(NSLocalizedString("\(who) following", comment: "Navigation bar title for view that shows who a user is following."))
+        .navigationBarTitle(NSLocalizedString("Following", comment: "Navigation bar title for view that shows who a user is following."))
     }
 }
 

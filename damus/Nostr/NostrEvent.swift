@@ -11,6 +11,8 @@ import secp256k1
 import secp256k1_implementation
 import CryptoKit
 
+
+
 enum ValidationResult: Decodable {
     case ok
     case bad_id
@@ -27,7 +29,7 @@ struct KeyEvent {
     let relay_url: String
 }
 
-struct ReferencedId: Identifiable, Hashable {
+struct ReferencedId: Identifiable, Hashable, Equatable {
     let ref_id: String
     let relay_id: String?
     let key: String
@@ -79,7 +81,7 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
     }
     
     var too_big: Bool {
-        return self.content.count > 32000
+        return self.content.count > 16000
     }
     
     var should_show_event: Bool {
@@ -103,9 +105,13 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
         if let bs = _blocks {
             return bs
         }
-        let blocks = parse_mentions(content: self.get_content(privkey), tags: self.tags)
+        let blocks = get_blocks(content: self.get_content(privkey))
         self._blocks = blocks
         return blocks
+    }
+
+    func get_blocks(content: String) -> [Block] {
+        return parse_mentions(content: content, tags: self.tags)
     }
 
     lazy var inner_event: NostrEvent? = {
@@ -151,7 +157,7 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
             pubkey = refkey.ref_id
         }
 
-        let dec = decrypt_dm(key, pubkey: pubkey, content: self.content)
+        let dec = decrypt_dm(key, pubkey: pubkey, content: self.content, encoding: .base64)
         self.decrypted_content = dec
 
         return dec
@@ -162,6 +168,9 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
             return decrypted(privkey: privkey) ?? "*failed to decrypt content*"
         }
         
+        return content
+        
+        /*
         switch validity {
         case .ok:
             return content
@@ -170,6 +179,7 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
         case .bad_sig:
             return content + "\n\n*WARNING: invalid signature, could be forged!*"
         }
+         */
     }
 
     var description: String {
@@ -204,6 +214,16 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
                 acc.append(direct_reply)
             }
         }
+    }
+    
+    public func thread_id(privkey: String?) -> String {
+        for ref in event_refs(privkey) {
+            if let thread_id = ref.is_thread_id {
+                return thread_id.ref_id
+            }
+        }
+        
+        return self.id
     }
 
     public func last_refid() -> ReferencedId? {
@@ -272,21 +292,7 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
         return (self.flags & 1) != 0
     }
 
-    init(content: String, pubkey: String, kind: Int = 1, tags: [[String]] = [], createdAt: Int64 = Int64(Date().timeIntervalSince1970)) {
-        self.id = ""
-        self.sig = ""
-
-        self.content = content
-        self.pubkey = pubkey
-        self.kind = kind
-        self.tags = tags
-        self.created_at = createdAt
-    }
-    
-    /// Intiialization statement used to specificy ID
-    ///
-    /// This is mainly used for contant and testing data
-    init(id: String, content: String, pubkey: String, kind: Int = 1, tags: [[String]] = []) {
+    init(id: String = "", content: String, pubkey: String, kind: Int = 1, tags: [[String]] = [], createdAt: Int64 = Int64(Date().timeIntervalSince1970)) {
         self.id = id
         self.sig = ""
 
@@ -294,7 +300,7 @@ class NostrEvent: Codable, Identifiable, CustomStringConvertible, Equatable, Has
         self.pubkey = pubkey
         self.kind = kind
         self.tags = tags
-        self.created_at = Int64(Date().timeIntervalSince1970)
+        self.created_at = createdAt
     }
 
     init(from: NostrEvent, content: String? = nil) {
@@ -364,7 +370,12 @@ func decode_nostr_event(txt: String) -> NostrResponse? {
 
 func encode_json<T: Encodable>(_ val: T) -> String? {
     let encoder = JSONEncoder()
+    encoder.outputFormatting = .withoutEscapingSlashes
     return (try? encoder.encode(val)).map { String(decoding: $0, as: UTF8.self) }
+}
+
+func decode_nostr_event_json(json: String) -> NostrEvent? {
+    return decode_json(json)
 }
 
 func decode_json<T: Decodable>(_ val: String) -> T? {
@@ -567,6 +578,127 @@ func make_like_event(pubkey: String, privkey: String, liked: NostrEvent) -> Nost
     return ev
 }
 
+func zap_target_to_tags(_ target: ZapTarget) -> [[String]] {
+    switch target {
+    case .profile(let pk):
+        return [["p", pk]]
+    case .note(let note_target):
+        return [["e", note_target.note_id], ["p", note_target.author]]
+    }
+}
+
+func make_private_zap_request_event(identity: FullKeypair, enc_key: FullKeypair, target: ZapTarget, message: String) -> String? {
+    // target tags must be the same as zap request target tags
+    let tags = zap_target_to_tags(target)
+    
+    let note = NostrEvent(content: message, pubkey: identity.pubkey, kind: 9733, tags: tags)
+    note.id = calculate_event_id(ev: note)
+    note.sig = sign_event(privkey: identity.privkey, ev: note)
+    
+    guard let note_json = encode_json(note) else {
+        return nil
+    }
+    return encrypt_message(message: note_json, privkey: enc_key.privkey, to_pk: target.pubkey, encoding: .bech32)
+}
+
+func decrypt_private_zap(our_privkey: String, zapreq: NostrEvent, target: ZapTarget) -> NostrEvent? {
+    guard let anon_tag = zapreq.tags.first(where: { t in t.count >= 2 && t[0] == "anon" }) else {
+        return nil
+    }
+    
+    let enc_note = anon_tag[1]
+    
+    var note = decrypt_note(our_privkey: our_privkey, their_pubkey: zapreq.pubkey, enc_note: enc_note, encoding: .bech32)
+    
+    // check to see if the private note was from us
+    if note == nil {
+        guard let our_private_keypair = generate_private_keypair(our_privkey: our_privkey, id: target.id, created_at: zapreq.created_at) else{
+            return nil
+        }
+        // use our private keypair and their pubkey to get the shared secret
+        note = decrypt_note(our_privkey: our_private_keypair.privkey, their_pubkey: target.pubkey, enc_note: enc_note, encoding: .bech32)
+    }
+    
+    guard let note else {
+        return nil
+    }
+        
+    guard note.kind == 9733 else {
+        return nil
+    }
+    
+    let zr_etag = zapreq.referenced_ids.first
+    let note_etag = note.referenced_ids.first
+    
+    guard zr_etag == note_etag else {
+        return nil
+    }
+    
+    let zr_ptag = zapreq.referenced_pubkeys.first
+    let note_ptag = note.referenced_pubkeys.first
+    
+    guard let zr_ptag, let note_ptag, zr_ptag == note_ptag else {
+        return nil
+    }
+    
+    guard validate_event(ev: note) == .ok else {
+        return nil
+    }
+    
+    return note
+}
+
+func generate_private_keypair(our_privkey: String, id: String, created_at: Int64) -> FullKeypair? {
+    let to_hash = our_privkey + id + String(created_at)
+    guard let dat = to_hash.data(using: .utf8) else {
+        return nil
+    }
+    let privkey_bytes = sha256(dat)
+    let privkey = hex_encode(privkey_bytes)
+    guard let pubkey = privkey_to_pubkey(privkey: privkey) else {
+        return nil
+    }
+    
+    return FullKeypair(pubkey: pubkey, privkey: privkey)
+}
+
+func make_zap_request_event(keypair: FullKeypair, content: String, relays: [RelayDescriptor], target: ZapTarget, zap_type: ZapType) -> NostrEvent? {
+    var tags = zap_target_to_tags(target)
+    var relay_tag = ["relays"]
+    relay_tag.append(contentsOf: relays.map { $0.url.absoluteString })
+    tags.append(relay_tag)
+    
+    var kp = keypair
+    
+    let now = Int64(Date().timeIntervalSince1970)
+    
+    var message = content
+    switch zap_type {
+    case .pub:
+        break
+    case .non_zap:
+        break
+    case .anon:
+        tags.append(["anon"])
+        kp = generate_new_keypair().to_full()!
+    case .priv:
+        guard let priv_kp = generate_private_keypair(our_privkey: keypair.privkey, id: target.id, created_at: now) else {
+            return nil
+        }
+        kp = priv_kp
+        guard let privreq = make_private_zap_request_event(identity: keypair, enc_key: kp, target: target, message: message) else {
+            return nil
+        }
+        tags.append(["anon", privreq])
+        message = ""
+    }
+    
+    let ev = NostrEvent(content: message, pubkey: kp.pubkey, kind: 9734, tags: tags, createdAt: now)
+    ev.id = calculate_event_id(ev: ev)
+    ev.sig = sign_event(privkey: kp.privkey, ev: ev)
+    return ev
+}
+
 func gather_reply_ids(our_pubkey: String, from: NostrEvent) -> [ReferencedId] {
     var ids = get_referenced_ids(tags: from.tags, key: "e").first.map { [$0] } ?? []
 
@@ -593,14 +725,14 @@ func event_to_json(ev: NostrEvent) -> String {
     return str
 }
 
-func decrypt_dm(_ privkey: String?, pubkey: String, content: String) -> String? {
+func decrypt_dm(_ privkey: String?, pubkey: String, content: String, encoding: EncEncoding) -> String? {
     guard let privkey = privkey else {
         return nil
     }
     guard let shared_sec = get_shared_secret(privkey: privkey, pubkey: pubkey) else {
         return nil
     }
-    guard let dat = decode_dm_base64(content) else {
+    guard let dat = (encoding == .base64 ? decode_dm_base64(content) : decode_dm_bech32(content)) else {
         return nil
     }
     guard let dat = aes_decrypt(data: dat.content, iv: dat.iv, shared_sec: shared_sec) else {
@@ -609,6 +741,13 @@ func decrypt_dm(_ privkey: String?, pubkey: String, content: String) -> String? 
     return String(data: dat, encoding: .utf8)
 }
 
+func decrypt_note(our_privkey: String, their_pubkey: String, enc_note: String, encoding: EncEncoding) -> NostrEvent? {
+    guard let dec = decrypt_dm(our_privkey, pubkey: their_pubkey, content: enc_note, encoding: encoding) else {
+        return nil
+    }
+    
+    return decode_nostr_event_json(json: dec)
+}
 
 func get_shared_secret(privkey: String, pubkey: String) -> [UInt8]? {
     guard let privkey_bytes = try? privkey.bytes else {
@@ -652,6 +791,39 @@ func get_shared_secret(privkey: String, pubkey: String) -> [UInt8]? {
 struct DirectMessageBase64 {
     let content: [UInt8]
     let iv: [UInt8]
+}
+
+
+
+func encode_dm_bech32(content: [UInt8], iv: [UInt8]) -> String {
+    let content_bech32 = bech32_encode(hrp: "pzap", content)
+    let iv_bech32 = bech32_encode(hrp: "iv", iv)
+    return content_bech32 + "_" + iv_bech32
+}
+
+func decode_dm_bech32(_ all: String) -> DirectMessageBase64? {
+    let parts = all.split(separator: "_")
+    guard parts.count == 2 else {
+        return nil
+    }
+    
+    let content_bech32 = String(parts[0])
+    let iv_bech32 = String(parts[1])
+    
+    guard let content_tup = try? bech32_decode(content_bech32) else {
+        return nil
+    }
+    guard let iv_tup = try? bech32_decode(iv_bech32) else {
+        return nil
+    }
+    guard content_tup.hrp == "pzap" else {
+        return nil
+    }
+    guard iv_tup.hrp == "iv" else {
+        return nil
+    }
+    
+    return DirectMessageBase64(content: content_tup.data.bytes, iv: iv_tup.data.bytes)
 }
 
 func encode_dm_base64(content: [UInt8], iv: [UInt8]) -> String {
@@ -772,6 +944,15 @@ func validate_event(ev: NostrEvent) -> ValidationResult {
     return ok ? .ok : .bad_sig
 }
 
+func last_etag(tags: [[String]]) -> String? {
+    var e: String? = nil
+    for tag in tags {
+        if tag.count >= 2 && tag[0] == "e" {
+            e = tag[1]
+        }
+    }
+    return e
+}
 
 func inner_event_or_self(ev: NostrEvent) -> NostrEvent {
     guard let inner_ev = ev.inner_event else {
@@ -779,4 +960,47 @@ func inner_event_or_self(ev: NostrEvent) -> NostrEvent {
     }
     
     return inner_ev
+}
+
+func first_eref_mention(ev: NostrEvent, privkey: String?) -> Mention? {
+    let blocks = ev.blocks(privkey).filter { block in
+        guard case .mention(let mention) = block else {
+            return false
+        }
+        
+        guard case .event = mention.type else {
+            return false
+        }
+        
+        if mention.ref.key != "e" {
+            return false
+        }
+        
+        return true
+    }
+    
+    /// MARK: - Preview
+    if let firstBlock = blocks.first, case .mention(let mention) = firstBlock, mention.ref.key == "e" {
+        return mention
+    }
+    
+    return nil
+}
+
+extension [ReferencedId] {
+    var pRefs: [ReferencedId] {
+        get {
+            Set(self).filter { ref in
+                ref.key == "p"
+            }
+        }
+    }
+    
+    var eRefs: [ReferencedId] {
+        get {
+            self.filter { ref in
+                ref.key == "e"
+            }
+        }
+    }
 }

@@ -9,18 +9,25 @@ import Foundation
 
 
 class SearchModel: ObservableObject {
-    @Published var events: [NostrEvent] = []
+    var events: EventHolder = EventHolder()
     @Published var loading: Bool = false
     @Published var channel_name: String? = nil
     
     let pool: RelayPool
     var search: NostrFilter
+    let contacts: Contacts
     let sub_id = UUID().description
     let limit: UInt32 = 500
     
-    init(pool: RelayPool, search: NostrFilter) {
+    init(contacts: Contacts, pool: RelayPool, search: NostrFilter) {
+        self.contacts = contacts
         self.pool = pool
         self.search = search
+    }
+    
+    func filter_muted()  {
+        self.events.filter { should_show_event(contacts: contacts, ev: $0) }
+        self.objectWillChange.send()
     }
     
     func subscribe() {
@@ -47,7 +54,11 @@ class SearchModel: ObservableObject {
             return
         }
         
-        if insert_uniq_sorted_event(events: &self.events, new_ev: ev, cmp: { $0.created_at > $1.created_at } ) {
+        guard should_show_event(contacts: contacts, ev: ev) else {
+            return
+        }
+        
+        if self.events.insert(ev) {
             objectWillChange.send()
         }
     }
@@ -85,6 +96,21 @@ func event_matches_hashtag(_ ev: NostrEvent, hashtags: [String]) -> Bool {
             return true
         }
     }
+    return false
+}
+
+func tag_is_hashtag(_ tag: [String]) -> Bool {
+    // "hashtag" is deprecated, will remove in the future
+    return tag.count >= 2 && (tag[0] == "hashtag" || tag[0] == "t")
+}
+
+func has_hashtag(_ tags: [[String]], hashtag: String) -> Bool {
+    for tag in tags {
+        if tag_is_hashtag(tag) && tag[1] == hashtag {
+            return true
+        }
+    }
+    
     return false
 }
 

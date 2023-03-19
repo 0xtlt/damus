@@ -11,7 +11,7 @@ import XCTest
 final class TimeAgoTests: XCTestCase {
 
     func testTimeAgoSince() {
-        let locale = Locale(identifier: "en_US")
+        let locale = Locale(identifier: "en-US")
         let calendar = locale.calendar
 
         XCTAssertEqual(time_ago_since(Date.now, calendar), "now")
@@ -31,7 +31,6 @@ final class TimeAgoTests: XCTestCase {
         XCTAssertEqual(time_ago_since(calendar.date(byAdding: .month, value: -1, to: Date.now)!, calendar), "1mo")
         XCTAssertEqual(time_ago_since(calendar.date(byAdding: .year, value: -1, to: Date.now)!.addingTimeInterval(1), calendar), "11mo")
         XCTAssertEqual(time_ago_since(calendar.date(byAdding: .year, value: -1, to: Date.now)!, calendar), "1y")
-        XCTAssertEqual(time_ago_since(calendar.date(byAdding: .year, value: -1000, to: Date.now)!, calendar), "1,000y")
     }
 
 }

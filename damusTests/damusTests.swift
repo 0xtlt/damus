@@ -79,6 +79,41 @@ class damusTests: XCTestCase {
         XCTAssertEqual(parsed[1].is_url?.absoluteString, "HTTPS://jb55.COM")
     }
     
+    func testBech32Url()  {
+        let parsed = decode_nostr_uri("nostr:npub1xtscya34g58tk0z605fvr788k263gsu6cy9x0mhnm87echrgufzsevkk5s")
+        
+        let hexpk = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245"
+        let expected: NostrLink = .ref(ReferencedId(ref_id: hexpk, relay_id: nil, key: "p"))
+        
+        XCTAssertEqual(parsed, expected)
+    }
+    
+    func testSaveDefaultZapAmount() {
+        let pubkey = "test_pubkey"
+        let amt = 1000
+        set_default_zap_amount(pubkey: pubkey, amount: amt)
+        let loaded = get_default_zap_amount(pubkey: pubkey)!
+        XCTAssertEqual(loaded, amt)
+    }
+    
+    func testSaveRelayFilters() {
+        var filters = Set<RelayFilter>()
+        
+        let filter1 = RelayFilter(timeline: .search, relay_id: "wss://abc.com")
+        let filter2 = RelayFilter(timeline: .home, relay_id: "wss://abc.com")
+        filters.insert(filter1)
+        filters.insert(filter2)
+        
+        let pubkey = "test_pubkey"
+        save_relay_filters(pubkey, filters: filters)
+        let loaded_filters = load_relay_filters(pubkey)!
+        
+        XCTAssertEqual(loaded_filters.count, 2)
+        XCTAssertTrue(loaded_filters.contains(filter1))
+        XCTAssertTrue(loaded_filters.contains(filter2))
+        XCTAssertEqual(filters, loaded_filters)
+    }
+    
     func testParseUrl() {
         let parsed = parse_mentions(content: "a https://jb55.com b", tags: [])
 
@@ -103,6 +138,22 @@ class damusTests: XCTestCase {
         XCTAssertEqual(parsed.count, 2)
         XCTAssertEqual(parsed[0].is_url?.absoluteString, "https://jb55.com")
         XCTAssertEqual(parsed[1].is_text, " br")
+    }
+    
+    func testNoParseUrlWithOnlyWhitespace() {
+        let testString = "https://  "
+        let parsed = parse_mentions(content: testString, tags: [])
+        
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed[0].is_text, testString)
+    }
+    
+    func testNoParseUrlTrailingCharacters() {
+        let testString = "https://foo.bar, "
+        let parsed = parse_mentions(content: testString, tags: [])
+        
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed[0].is_url?.absoluteString, "https://foo.bar")
     }
     
     func testParseMentionBlank() {
@@ -135,6 +186,26 @@ class damusTests: XCTestCase {
         XCTAssertEqual(parsed[0].is_text, "some hashtag ")
         XCTAssertEqual(parsed[1].is_hashtag, "bitcoin")
         XCTAssertEqual(parsed[2].is_text, " derp")
+    }
+    
+    func testHashtagWithComma() {
+        let parsed = parse_mentions(content: "some hashtag #bitcoin, cool", tags: [])
+        
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed.count, 3)
+        XCTAssertEqual(parsed[0].is_text, "some hashtag ")
+        XCTAssertEqual(parsed[1].is_hashtag, "bitcoin")
+        XCTAssertEqual(parsed[2].is_text, ", cool")
+    }
+    
+    func testHashtagWithEmoji() {
+        let parsed = parse_mentions(content: "some hashtag #bitcoin☕️ cool", tags: [])
+        
+        XCTAssertNotNil(parsed)
+        XCTAssertEqual(parsed.count, 3)
+        XCTAssertEqual(parsed[0].is_text, "some hashtag ")
+        XCTAssertEqual(parsed[1].is_hashtag, "bitcoin")
+        XCTAssertEqual(parsed[2].is_text, "☕️ cool")
     }
     
     func testParseHashtagEnd() {
